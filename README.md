@@ -124,6 +124,70 @@ uv run ruff check .
 
 测试通过依赖替身 Provider，不需要调用真实 Embedding 服务；真实接口调用仍需要配置 `MODEL_API_KEY` 和兼容的模型地址。
 
+## 日志和错误码
+
+应用启动时会初始化全局日志管线：
+
+- 控制台输出带颜色，文件输出使用统一格式：时间、级别、模块/函数/行号、请求 ID 和消息。
+- 普通日志写入 `logs/app.log`，`ERROR` 及以上日志单独写入 `logs/error.log`。
+- 两个文件都支持大小和时间双重轮转，默认单文件 `10 MB`、保留 `5` 个备份。
+- `X-Request-ID` 会沿请求链路透传；未提供时由服务自动生成。
+- 日志队列由后台监听线程写入文件，业务协程不会同步执行文件 I/O。
+
+可通过环境变量调整日志配置，例如：
+
+```dotenv
+LOG_LEVEL=INFO
+LOG_DIR=logs
+LOG_MAX_BYTES=10485760
+LOG_BACKUP_COUNT=5
+LOG_ROTATION_WHEN=midnight
+LOG_ROTATION_INTERVAL=1
+LOG_CONSOLE_COLOR=true
+LOG_PAYLOAD_MAX_LENGTH=2000
+```
+
+错误响应统一为：
+
+```json
+{
+  "code": 0,
+  "msg": "success",
+  "data": {}
+}
+```
+
+错误码按范围划分：`10000` 段为通用客户端错误，`20000` 段为接口/HTTP，`30000` 段为数据库/存储，`40000` 段为 LLM，`50000` 段为系统服务异常。业务代码可以使用统一异常和快速抛错工具：
+
+```python
+from app.core.error_codes import ErrorCode
+from app.core.exceptions import raise_app_error
+
+raise_app_error(
+    ErrorCode.PARAM_ERROR,
+    data={"field": "query"},
+    context={"operation": "retrieve"},
+)
+```
+
+接口和模型调用日志也可以复用工具：
+
+```python
+from app.core.logging import log_api_call, log_llm_call
+
+
+@log_api_call
+async def handle_request(request):
+    return {"ok": True}
+
+
+result = await log_llm_call(
+    lambda: client.embeddings.create(model="embedding-model", input="hello"),
+    model="embedding-model",
+    prompt="hello",
+)
+```
+
 ## 数据库迁移
 
 ```powershell

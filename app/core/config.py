@@ -17,6 +17,15 @@ class Settings(BaseSettings):
     chunk_overlap: int = 100
     top_k: int = 5
 
+    log_level: str = "INFO"
+    log_dir: str = "logs"
+    log_max_bytes: int = 10 * 1024 * 1024
+    log_backup_count: int = 5
+    log_rotation_when: str = "midnight"
+    log_rotation_interval: int = 1
+    log_console_color: bool = True
+    log_payload_max_length: int = 2000
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

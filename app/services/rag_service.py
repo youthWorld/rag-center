@@ -4,6 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
 from app.core.exceptions import KnowledgeBaseNotFoundError
+from app.core.logging import get_logger
 from app.providers.embedding.base import EmbeddingProvider
 from app.providers.vectorstores.base import VectorStore
 from app.repositories.knowledge_base_repository import KnowledgeBaseRepository
@@ -27,8 +28,15 @@ class RagService:
         self.retrieval_log_repository = retrieval_log_repository
         self.embedding_provider = embedding_provider
         self.vector_store = vector_store
+        self.logger = get_logger(__name__)
 
     async def retrieve(self, request: RagRetrieveRequest) -> RagRetrieveResponse:
+        self.logger.info(
+            "BUSINESS_EVENT | event=rag_retrieval_started | kb_id=%s | tenant_id=%s | user_id=%s",
+            request.kb_id,
+            request.tenant_id,
+            request.user_id,
+        )
         knowledge_base = await self.knowledge_base_repository.get_by_id(
             kb_id=request.kb_id,
             tenant_id=request.tenant_id,
@@ -68,6 +76,13 @@ class RagService:
             latency_ms=latency_ms,
         )
         await self.session.commit()
+        self.logger.info(
+            "BUSINESS_EVENT | event=rag_retrieval_completed | kb_id=%s | "
+            "chunk_count=%s | latency_ms=%s",
+            knowledge_base.id,
+            len(retrieved_chunks),
+            latency_ms,
+        )
 
         return RagRetrieveResponse(
             query=request.query,

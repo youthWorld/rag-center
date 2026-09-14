@@ -3,10 +3,20 @@ from typing import Any
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.api.v1.router import router as v1_router
+from app.core.config import settings
+from app.core.error_codes import ErrorCode
 from app.core.exceptions import AppError
-from app.core.logging import configure_logging
+from app.core.logging import (
+    configure_logging,
+    get_logger,
+    log_exception,
+    request_logging_middleware,
+)
+
+logger = get_logger(__name__)
 
 
 def create_app() -> FastAPI:
@@ -16,33 +26,97 @@ def create_app() -> FastAPI:
         version="0.1.0",
         description="A small, extensible RAG platform backend.",
     )
+    application.state.settings = settings
+    application.middleware("http")(request_logging_middleware)
     application.include_router(v1_router)
 
     @application.exception_handler(AppError)
-    async def handle_app_error(_request: Request, exc: AppError) -> JSONResponse:
+    async def handle_app_error(request: Request, exc: AppError) -> JSONResponse:
+        logger.warning(
+            "APP_ERROR | code=%s | status_code=%s | public_message=%s | "
+            "internal_message=%s | context=%s",
+            exc.code,
+            exc.status_code,
+            exc.message,
+            exc.internal_message,
+            exc.context,
+        )
         return JSONResponse(
             status_code=exc.status_code,
-            content={"code": exc.code, "msg": exc.message, "data": exc.data},
+            content=exc.to_response(),
+            headers={"X-Request-ID": getattr(request.state, "request_id", "-")},
         )
 
     @application.exception_handler(RequestValidationError)
     async def handle_validation_error(
-        _request: Request, exc: RequestValidationError
+        request: Request, exc: RequestValidationError
     ) -> JSONResponse:
+        errors = _serialize_validation_errors(exc.errors())
+        logger.warning(
+            "REQUEST_VALIDATION_ERROR | url=%s | errors=%s",
+            request.url,
+            errors,
+        )
         return JSONResponse(
             status_code=400,
             content={
-                "code": 40000,
-                "msg": "request validation failed",
-                "data": {"errors": _serialize_validation_errors(exc.errors())},
+                "code": ErrorCode.REQUEST_VALIDATION_ERROR.code,
+                "msg": ErrorCode.REQUEST_VALIDATION_ERROR.message,
+                "data": {"errors": errors},
             },
+            headers={"X-Request-ID": getattr(request.state, "request_id", "-")},
+        )
+
+    @application.exception_handler(StarletteHTTPException)
+    async def handle_http_error(
+        request: Request,
+        exc: StarletteHTTPException,
+    ) -> JSONResponse:
+        error_code = {
+            401: ErrorCode.UNAUTHORIZED,
+            403: ErrorCode.FORBIDDEN,
+            404: ErrorCode.NOT_FOUND,
+            405: ErrorCode.METHOD_ERROR,
+        }.get(exc.status_code, ErrorCode.API_REQUEST_ERROR)
+        message = (
+            error_code.message
+            if exc.status_code in {401, 403, 404, 405} or exc.status_code >= 500
+            else exc.detail
+            if isinstance(exc.detail, str)
+            else error_code.message
+        )
+        logger.warning(
+            "HTTP_ERROR | status_code=%s | code=%s | detail=%s | url=%s",
+            exc.status_code,
+            error_code.code,
+            exc.detail,
+            request.url,
+        )
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"code": error_code.code, "msg": message, "data": None},
+            headers={"X-Request-ID": getattr(request.state, "request_id", "-")},
         )
 
     @application.exception_handler(Exception)
-    async def handle_unexpected_error(_request: Request, _exc: Exception) -> JSONResponse:
+    async def handle_unexpected_error(request: Request, exc: Exception) -> JSONResponse:
+        log_exception(
+            exc,
+            logger=logger,
+            context={
+                "method": request.method,
+                "url": str(request.url),
+                "request_id": getattr(request.state, "request_id", None),
+            },
+        )
         return JSONResponse(
             status_code=500,
-            content={"code": 50000, "msg": "internal server error", "data": None},
+            content={
+                "code": ErrorCode.SERVER_ERROR.code,
+                "msg": ErrorCode.SERVER_ERROR.message,
+                "data": None,
+            },
+            headers={"X-Request-ID": getattr(request.state, "request_id", "-")},
         )
 
     return application

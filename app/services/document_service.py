@@ -1,6 +1,7 @@
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import DocumentIndexingError, KnowledgeBaseNotFoundError
+from app.core.logging import get_logger
 from app.models.document import DocumentStatus
 from app.repositories.document_repository import DocumentRepository
 from app.repositories.knowledge_base_repository import KnowledgeBaseRepository
@@ -20,8 +21,15 @@ class DocumentService:
         self.document_repository = document_repository
         self.knowledge_base_repository = knowledge_base_repository
         self.indexing_service = indexing_service
+        self.logger = get_logger(__name__)
 
     async def upload(self, request: DocumentUploadRequest) -> DocumentUploadResponse:
+        self.logger.info(
+            "BUSINESS_EVENT | event=document_upload_started | kb_id=%s | tenant_id=%s | title=%s",
+            request.kb_id,
+            request.tenant_id,
+            request.title,
+        )
         knowledge_base = await self.knowledge_base_repository.get_by_id(
             kb_id=request.kb_id,
             tenant_id=request.tenant_id,
@@ -43,11 +51,20 @@ class DocumentService:
             document.error_message = None
             await self.session.commit()
         except Exception as exc:
+            self.logger.exception(
+                "BUSINESS_ERROR | event=document_indexing_failed | document_id=%s",
+                document.id,
+            )
             document.status = int(DocumentStatus.FAILED)
             document.error_message = str(exc)[:2000]
             await self.session.commit()
             raise DocumentIndexingError(document.id, str(exc)) from exc
 
+        self.logger.info(
+            "BUSINESS_EVENT | event=document_indexed | document_id=%s | chunk_count=%s",
+            document.id,
+            chunk_count,
+        )
         return DocumentUploadResponse(
             document_id=document.id,
             kb_id=document.kb_id,

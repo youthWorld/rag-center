@@ -1,3 +1,4 @@
+from app.core.logging import get_logger
 from app.models.document import Document
 from app.providers.embedding.base import EmbeddingProvider
 from app.providers.parsers.base import DocumentParser
@@ -22,8 +23,14 @@ class IndexingService:
         self.embedding_provider = embedding_provider
         self.vector_store = vector_store
         self.document_parser = document_parser or PlainTextDocumentParser()
+        self.logger = get_logger(__name__)
 
     async def index_document(self, document: Document) -> int:
+        self.logger.info(
+            "BUSINESS_EVENT | event=document_indexing_started | document_id=%s | kb_id=%s",
+            document.id,
+            document.kb_id,
+        )
         parsed_content = self.document_parser.parse(
             document.content,
             source_type=document.source_type or "text",
@@ -50,4 +57,9 @@ class IndexingService:
             for index, (content, embedding) in enumerate(zip(contents, embeddings, strict=True))
         ]
         await self.vector_store.add_chunks(chunks)
+        self.logger.info(
+            "BUSINESS_EVENT | event=document_chunks_persisted | document_id=%s | chunk_count=%s",
+            document.id,
+            len(chunks),
+        )
         return len(chunks)
