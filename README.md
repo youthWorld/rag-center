@@ -1,0 +1,154 @@
+# RAG Center
+
+RAG Center 是一个面向业务方提供统一 RAG 能力的后端中台骨架。第一阶段只实现知识库创建、文档同步索引和向量检索三个核心接口，保留 EmbeddingProvider、VectorStore、DocumentParser 和 TextSplitter 的扩展边界。
+
+## 技术栈
+
+- Python 3.11
+- FastAPI
+- PostgreSQL 16 + pgvector
+- SQLAlchemy 2.x + Alembic
+- Pydantic v2
+- OpenAI-compatible Embedding Provider
+- uv
+
+## 目录结构
+
+```text
+app/
+  api/v1/routes/       HTTP 路由
+  core/                配置、日志和异常
+  db/                  SQLAlchemy 基础类和会话
+  models/              知识库、文档、chunk、检索日志
+  schemas/             Pydantic 请求和响应模型
+  services/            业务编排和同步索引流程
+  repositories/        数据库读写
+  providers/           Embedding、DocumentParser 和 VectorStore 抽象及实现
+  utils/               UUID 和文本切片工具
+migrations/            Alembic 迁移
+tests/                 自动化测试
+```
+
+## 三个核心接口
+
+所有业务接口使用统一响应格式：
+
+```json
+{
+  "code": 0,
+  "msg": "success",
+  "data": {}
+}
+```
+
+### 创建知识库
+
+`POST /api/v1/knowledge-bases/create`
+
+```json
+{
+  "name": "退款政策知识库",
+  "description": "用于客服退款问题问答",
+  "tenant_id": "tenant_demo"
+}
+```
+
+### 上传文档并同步索引
+
+`POST /api/v1/documents/upload`
+
+```json
+{
+  "tenant_id": "tenant_demo",
+  "kb_id": "<knowledge-base-id>",
+  "title": "退款政策",
+  "content": "用户可在订单完成后 7 天内申请退款。"
+}
+```
+
+接口会同步完成文本切片、Embedding 生成和 pgvector 写入。返回状态值为 `1` 表示成功，`2` 表示失败，`3` 预留给后续异步索引。
+
+### RAG 检索增强
+
+`POST /api/v1/rag/retrieve`
+
+```json
+{
+  "tenant_id": "tenant_demo",
+  "kb_id": "<knowledge-base-id>",
+  "user_id": "user_demo",
+  "query": "退款需要几天内申请？"
+}
+```
+
+接口只返回结构化召回 chunk、引用来源、分数和检索元数据，不生成最终答案。业务方可以使用这些上下文调用自己的大模型或编排服务。
+
+## 本地启动
+
+1. 安装 Python 3.11 和 uv。
+2. 创建环境文件：
+
+   ```powershell
+   Copy-Item .env.example .env
+   ```
+3. 在 `.env` 中填写 `MODEL_API_KEY`，并确认 `EMBEDDING_DIMENSIONS` 与模型输出维度一致。当前示例使用 DashScope 的 `qwen3.7-text-embedding`，显式请求 `1536` 维输出。
+4. 安装依赖：
+
+   ```powershell
+   uv sync
+   ```
+5. 启动 PostgreSQL 和 pgvector。当前 Docker Compose 只负责数据库基础设施，不构建或运行 Python/API 容器：
+
+   ```powershell
+   docker compose up -d
+   ```
+6. 执行数据库迁移：
+
+   ```powershell
+   uv run alembic upgrade head
+   ```
+7. 启动 API：
+
+   ```powershell
+   uv run uvicorn app.main:app --reload
+   ```
+
+当前开发模式下，Python、uv 和 FastAPI 都由本机环境管理；Docker 只运行 PostgreSQL + pgvector。后续部署阶段再增加 API 容器和对应的 Python 运行时镜像。
+
+## 测试和代码检查
+
+```powershell
+uv run pytest
+uv run ruff check .
+```
+
+测试通过依赖替身 Provider，不需要调用真实 Embedding 服务；真实接口调用仍需要配置 `MODEL_API_KEY` 和兼容的模型地址。
+
+## 数据库迁移
+
+```powershell
+uv run alembic upgrade head
+uv run alembic downgrade -1
+```
+
+当前数据库向量列使用 1536 维，与项目当前 `.env` 中的 Embedding 模型输出保持一致。`EMBEDDING_DIMENSIONS` 必须与实际模型输出维度一致；若更换 Embedding 模型或维度，应同步调整配置并新增迁移，不要直接修改已经应用的历史迁移。
+
+如果出现 `expected 1536 dimensions, not 1024`，说明 Embedding 请求没有按配置返回 1536 维，或数据库仍未升级到当前结构。确认 `.env` 中为 `EMBEDDING_DIMENSIONS=1536`，重启 API，并执行：
+
+```powershell
+uv run alembic upgrade head
+```
+
+## 后续扩展方向
+
+- 接入 Elasticsearch / OpenSearch，实现 BM25 混合检索。
+- 将 `IndexingService.index_document()` 迁移到 BackgroundTasks、Celery 或消息队列。
+- 增加 `RerankProvider`。
+- 增加 Milvus / Qdrant `VectorStore` 实现。
+- 增加权限 ACL 过滤。
+- 增加评测集和反馈闭环。
+- 增加管理后台。
+
+## 当前边界
+
+第一阶段不包含管理后台、多种文件格式解析、Elasticsearch / OpenSearch、rerank、复杂权限系统、评测系统、A/B 测试、多轮会话记忆以及 Redis / Celery 异步任务。
