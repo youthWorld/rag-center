@@ -2,8 +2,13 @@ from fastapi import Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings, settings
+from app.core.exceptions import ServiceConfigurationError
 from app.db.session import get_db
 from app.providers.embedding.openai_compatible import OpenAICompatibleEmbeddingProvider
+from app.providers.llm.openai_compatible import OpenAICompatibleLLMProvider
+from app.providers.rerank.base import RerankProvider
+from app.providers.rerank.llm import LLMRerankProvider
+from app.providers.rerank.noop import NoopRerankProvider
 from app.providers.vectorstores.pgvector import PgVectorStore
 from app.repositories.document_repository import DocumentRepository
 from app.repositories.knowledge_base_repository import KnowledgeBaseRepository
@@ -17,6 +22,29 @@ from app.utils.text_splitter import TextSplitter
 
 def get_settings() -> Settings:
     return settings
+
+
+def get_llm_provider(app_settings: Settings) -> OpenAICompatibleLLMProvider:
+    if app_settings.llm_provider != "openai_compatible":
+        raise ServiceConfigurationError(
+            internal_message=f"unsupported LLM_PROVIDER: {app_settings.llm_provider}",
+            context={"provider": app_settings.llm_provider},
+        )
+    return OpenAICompatibleLLMProvider(app_settings)
+
+
+def get_rerank_provider(app_settings: Settings) -> RerankProvider:
+    if app_settings.rerank_provider == "noop":
+        return NoopRerankProvider()
+    if app_settings.rerank_provider == "llm":
+        return LLMRerankProvider.from_settings(
+            get_llm_provider(app_settings),
+            app_settings,
+        )
+    raise ServiceConfigurationError(
+        internal_message=f"unsupported RERANK_PROVIDER: {app_settings.rerank_provider}",
+        context={"provider": app_settings.rerank_provider},
+    )
 
 
 def get_knowledge_base_service(
@@ -61,4 +89,5 @@ def get_rag_service(
         retrieval_log_repository=RetrievalLogRepository(session),
         embedding_provider=OpenAICompatibleEmbeddingProvider(app_settings),
         vector_store=PgVectorStore(session),
+        rerank_provider=get_rerank_provider(app_settings),
     )

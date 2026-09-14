@@ -10,6 +10,7 @@ RAG Center 是一个面向业务方提供统一 RAG 能力的后端中台骨架�
 - SQLAlchemy 2.x + Alembic
 - Pydantic v2
 - OpenAI-compatible Embedding Provider
+- OpenAI-compatible Chat LLM Provider（可选，用于重排序）
 - uv
 
 ## 目录结构
@@ -82,6 +83,26 @@ tests/                 自动化测试
 ```
 
 接口只返回结构化召回 chunk、引用来源、分数和检索元数据，不生成最终答案。业务方可以使用这些上下文调用自己的大模型或编排服务。
+
+通过 `rerank_options` 可以在向量召回后启用大模型重排序：
+
+```json
+{
+  "tenant_id": "tenant_demo",
+  "kb_id": "<knowledge-base-id>",
+  "user_id": "user_demo",
+  "query": "退款需要几天内申请？",
+  "top_k": 20,
+  "rerank_options": {
+    "enabled": true,
+    "top_n": 5
+  }
+}
+```
+
+启用后，接口会保留原始向量分数 `score`，并在 `retrieved_chunks` 中返回 `rerank_score`。重排序失败时会记录降级日志并返回原始向量排序结果。
+
+重排序由 `LLMRerankProvider` 通过通用 `LLMProvider` 调用 OpenAI-compatible Chat Completions，不绑定具体模型厂商。相关配置包括 `LLM_PROVIDER`、`LLM_BASE_URL`、`LLM_API_KEY`、`LLM_MODEL`、`RERANK_ENABLED`、`RERANK_TOP_N`、`RERANK_MAX_CANDIDATES` 和 `RERANK_CHUNK_MAX_CHARS`，完整示例见 `.env.example`。
 
 ## 本地启动
 
@@ -207,7 +228,6 @@ uv run alembic upgrade head
 
 - 接入 Elasticsearch / OpenSearch，实现 BM25 混合检索。
 - 将 `IndexingService.index_document()` 迁移到 BackgroundTasks、Celery 或消息队列。
-- 增加 `RerankProvider`。
 - 增加 Milvus / Qdrant `VectorStore` 实现。
 - 增加权限 ACL 过滤。
 - 增加评测集和反馈闭环。
@@ -215,4 +235,4 @@ uv run alembic upgrade head
 
 ## 当前边界
 
-第一阶段不包含管理后台、多种文件格式解析、Elasticsearch / OpenSearch、rerank、复杂权限系统、评测系统、A/B 测试、多轮会话记忆以及 Redis / Celery 异步任务。
+当前仍不包含多种文件格式解析、Elasticsearch / OpenSearch、复杂权限系统、评测系统、A/B 测试、多轮会话记忆以及 Redis / Celery 异步任务。
