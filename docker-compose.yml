@@ -16,5 +16,25 @@ services:
       timeout: 5s
       retries: 10
 
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.17.10
+    container_name: es8
+    ports:
+      - "9200:9200"
+      - "9300:9300"
+    environment:
+      discovery.type: single-node
+      ES_JAVA_OPTS: "-Xms512m -Xmx1g"
+      xpack.security.enabled: "false"
+      xpack.security.http.ssl.enabled: "false"
+    volumes:
+      - es8-data:/usr/share/elasticsearch/data
+      - es8-plugins:/usr/share/elasticsearch/plugins
+    restart: always
+
 volumes:
   postgres-data:
+  es8-data:
+    name: es8-data
+  es8-plugins:
+    name: es8-plugins

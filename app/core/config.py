@@ -19,6 +19,15 @@ class Settings(BaseSettings):
     llm_timeout_seconds: int = 60
 
     vector_store: str = "pgvector"
+    keyword_search_provider: str = "elasticsearch"
+    elasticsearch_url: str = "http://localhost:9200"
+    elasticsearch_index: str = "rag_chunks"
+    retrieval_mode: str = "vector"
+    hybrid_fusion: str = "rrf"
+    hybrid_rrf_k: int = 60
+    hybrid_vector_top_k: int = 20
+    hybrid_bm25_top_k: int = 20
+    hybrid_top_n: int = 20
     chunk_size: int = 800
     chunk_overlap: int = 100
     top_k: int = 5
