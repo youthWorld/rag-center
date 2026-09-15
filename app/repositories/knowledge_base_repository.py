@@ -31,7 +31,7 @@ class KnowledgeBaseRepository:
         return result.scalar_one_or_none()
 
     async def list_tree(
-        self, *, keyword: str | None = None
+        self, *, tenant_id: str, keyword: str | None = None
     ) -> list[tuple[KnowledgeBase, Document | None, int]]:
         statement = (
             select(KnowledgeBase, Document, func.count(Chunk.id).label("chunk_count"))
@@ -53,9 +53,10 @@ class KnowledgeBaseRepository:
                 Document.id.asc(),
             )
         )
+        statement = statement.where(KnowledgeBase.tenant_id == tenant_id)
         normalized_keyword = keyword.strip() if keyword else ""
         if normalized_keyword:
-            statement = statement.where(KnowledgeBase.tenant_id.ilike(f"%{normalized_keyword}%"))
+            statement = statement.where(KnowledgeBase.name.ilike(f"%{normalized_keyword}%"))
 
         result = await self.session.execute(statement)
         return [

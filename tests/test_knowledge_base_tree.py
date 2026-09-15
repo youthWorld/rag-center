@@ -11,7 +11,8 @@ class FakeKnowledgeBaseRepository:
         self.rows = rows
         self.keyword = None
 
-    async def list_tree(self, *, keyword=None):
+    async def list_tree(self, *, tenant_id, keyword=None):
+        self.tenant_id = tenant_id
         self.keyword = keyword
         return self.rows
 
@@ -37,12 +38,24 @@ async def test_knowledge_base_service_groups_tree_rows_by_tenant_and_kb() -> Non
             12,
         ),
         (knowledge_base, None, 0),
+        (
+            SimpleNamespace(
+                id="kb-other",
+                tenant_id="other-tenant",
+                name="其他租户知识库",
+                description=None,
+                created_at=created_at,
+            ),
+            None,
+            0,
+        ),
     ]
     repository = FakeKnowledgeBaseRepository(rows)
     service = KnowledgeBaseService(session=SimpleNamespace(), repository=repository)
 
-    result = await service.list_tree(keyword="tech")
+    result = await service.list_tree(tenant_id="tech_position", keyword="tech")
 
+    assert repository.tenant_id == "tech_position"
     assert repository.keyword == "tech"
     assert [tenant.tenant_id for tenant in result] == ["tech_position"]
     assert result[0].knowledge_bases[0].kb_id == "kb-tech"

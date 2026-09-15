@@ -17,9 +17,11 @@ class KnowledgeBaseService:
         self.repository = repository
         self.logger = get_logger(__name__)
 
-    async def create(self, request: KnowledgeBaseCreateRequest) -> KnowledgeBaseResponse:
+    async def create(
+        self, request: KnowledgeBaseCreateRequest, *, tenant_id: str
+    ) -> KnowledgeBaseResponse:
         knowledge_base = await self.repository.create(
-            tenant_id=request.tenant_id,
+            tenant_id=tenant_id,
             name=request.name,
             description=request.description,
         )
@@ -38,13 +40,20 @@ class KnowledgeBaseService:
         )
 
     async def list_tree(
-        self, *, keyword: str | None = None
+        self, *, tenant_id: str, keyword: str | None = None
     ) -> list[KnowledgeBaseTenantTreeResponse]:
-        rows = await self.repository.list_tree(keyword=keyword)
-        tenants: dict[str, KnowledgeBaseTenantTreeResponse] = {}
+        rows = await self.repository.list_tree(tenant_id=tenant_id, keyword=keyword)
+        tenants: dict[str, KnowledgeBaseTenantTreeResponse] = {
+            tenant_id: KnowledgeBaseTenantTreeResponse(
+                tenant_id=tenant_id,
+                knowledge_bases=[],
+            )
+        }
         knowledge_bases: dict[tuple[str, str], KnowledgeBaseTreeResponse] = {}
 
         for knowledge_base, document, chunk_count in rows:
+            if knowledge_base.tenant_id != tenant_id:
+                continue
             tenant = tenants.setdefault(
                 knowledge_base.tenant_id,
                 KnowledgeBaseTenantTreeResponse(
@@ -75,4 +84,4 @@ class KnowledgeBaseService:
                     )
                 )
 
-        return list(tenants.values())
+        return [tenants[tenant_id]]

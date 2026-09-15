@@ -10,7 +10,7 @@ class ErrorCode(Enum):
 
     # Common client and authentication errors.
     PARAM_ERROR = (10001, "invalid request parameters")
-    UNAUTHORIZED = (10002, "authentication required")
+    UNAUTHORIZED = (20010, "authentication required")
     FORBIDDEN = (10003, "permission denied")
     NOT_FOUND = (10004, "resource not found")
     METHOD_ERROR = (10005, "method not allowed")

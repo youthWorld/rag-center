@@ -50,8 +50,7 @@ tests/                 自动化测试
 ```json
 {
   "name": "退款政策知识库",
-  "description": "用于客服退款问题问答",
-  "tenant_id": "tenant_demo"
+  "description": "用于客服退款问题问答"
 }
 ```
 
@@ -61,7 +60,6 @@ tests/                 自动化测试
 
 ```json
 {
-  "tenant_id": "tenant_demo",
   "kb_id": "<knowledge-base-id>",
   "title": "退款政策",
   "content": "用户可在订单完成后 7 天内申请退款。"
@@ -76,7 +74,6 @@ tests/                 自动化测试
 
 ```json
 {
-  "tenant_id": "tenant_demo",
   "kb_id": "<knowledge-base-id>",
   "user_id": "user_demo",
   "query": "退款需要几天内申请？"
@@ -89,7 +86,6 @@ tests/                 自动化测试
 
 ```json
 {
-  "tenant_id": "tenant_demo",
   "kb_id": "<knowledge-base-id>",
   "user_id": "user_demo",
   "query": "退款需要几天内申请？",
@@ -109,7 +105,6 @@ hybrid 模式先合并两路召回结果，再按 `1 / (rrf_k + rank)` 计算 RR
 
 ```json
 {
-  "tenant_id": "tenant_demo",
   "kb_id": "<knowledge-base-id>",
   "user_id": "user_demo",
   "query": "退款需要几天内申请？",
@@ -124,6 +119,17 @@ hybrid 模式先合并两路召回结果，再按 `1 / (rrf_k + rank)` 计算 RR
 启用后，接口会保留原始向量分数 `score`，并在 `retrieved_chunks` 中返回 `rerank_score`。重排序失败时会记录降级日志并返回原始向量排序结果。
 
 重排序由 `LLMRerankProvider` 通过通用 `LLMProvider` 调用 OpenAI-compatible Chat Completions，不绑定具体模型厂商。相关配置包括 `LLM_PROVIDER`、`LLM_BASE_URL`、`LLM_API_KEY`、`LLM_MODEL`、`RERANK_ENABLED`、`RERANK_TOP_N`、`RERANK_MAX_CANDIDATES` 和 `RERANK_CHUNK_MAX_CHARS`，完整示例见 `.env.example`。
+
+## 多用户鉴权
+
+默认开启多用户鉴权。客户端先创建租户和 API Key，再在请求头中携带 `Authorization: Bearer <api-key>` 调用业务接口：
+
+```powershell
+uv run python scripts/create_tenant.py --id tenant_demo --name "演示租户"
+uv run python scripts/create_api_key.py --tenant-id tenant_demo --name "本地开发"
+```
+
+API Key 只在创建命令中明文输出一次，数据库只保存 SHA-256 hash。`GET /api/v1/auth/me` 可用于验证当前 Key 和租户信息。设置 `AUTH_ENABLED=false` 时跳过 Key 校验并固定使用 `tenant_demo`，便于本地调试。
 
 ## 本地启动
 

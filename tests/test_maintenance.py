@@ -6,6 +6,8 @@ import httpx
 import pytest
 
 from app.api.dependencies import get_knowledge_base_service
+from app.api.v1.deps import get_current_tenant
+from app.core.auth import TenantContext
 from app.core.config import Settings
 from app.core.error_codes import ErrorCode
 from app.core.exceptions import AppError, LLMServiceError, raise_app_error
@@ -19,6 +21,19 @@ from app.core.logging import (
 )
 from app.main import app
 from app.providers.embedding.openai_compatible import OpenAICompatibleEmbeddingProvider
+
+
+@pytest.fixture(autouse=True)
+def override_authentication():
+    app.dependency_overrides[get_current_tenant] = lambda: TenantContext(
+        tenant_id="tenant-test",
+        tenant_name="Test tenant",
+        key_id="key-test",
+        key_prefix="rk_test",
+        key_name="test",
+    )
+    yield
+    app.dependency_overrides.pop(get_current_tenant, None)
 
 
 def test_error_code_and_exception_contract() -> None:
@@ -164,7 +179,8 @@ async def test_unknown_route_uses_standard_http_error() -> None:
 @pytest.mark.asyncio
 async def test_unexpected_errors_return_safe_response() -> None:
     class FailingKnowledgeBaseService:
-        async def create(self, _request):
+        async def create(self, _request, *, tenant_id: str):
+            del tenant_id
             raise RuntimeError("database password=secret")
 
     app.dependency_overrides[get_knowledge_base_service] = lambda: FailingKnowledgeBaseService()

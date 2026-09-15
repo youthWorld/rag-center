@@ -23,22 +23,24 @@ class DocumentService:
         self.indexing_service = indexing_service
         self.logger = get_logger(__name__)
 
-    async def upload(self, request: DocumentUploadRequest) -> DocumentUploadResponse:
+    async def upload(
+        self, request: DocumentUploadRequest, *, tenant_id: str
+    ) -> DocumentUploadResponse:
         self.logger.info(
             "BUSINESS_EVENT | event=document_upload_started | kb_id=%s | tenant_id=%s | title=%s",
             request.kb_id,
-            request.tenant_id,
+            tenant_id,
             request.title,
         )
         knowledge_base = await self.knowledge_base_repository.get_by_id(
             kb_id=request.kb_id,
-            tenant_id=request.tenant_id,
+            tenant_id=tenant_id,
         )
         if knowledge_base is None:
             raise KnowledgeBaseNotFoundError()
 
         document = await self.document_repository.create(
-            tenant_id=request.tenant_id,
+            tenant_id=tenant_id,
             kb_id=knowledge_base.id,
             title=request.title,
             content=request.content,

@@ -7,7 +7,6 @@ from app.schemas.rerank import RerankOptions
 
 
 class RagRetrieveRequest(BaseModel):
-    tenant_id: str = Field(min_length=1, max_length=128)
     kb_id: str = Field(min_length=1, max_length=36)
     user_id: str = Field(min_length=1, max_length=128)
     query: str = Field(min_length=1)
@@ -15,7 +14,7 @@ class RagRetrieveRequest(BaseModel):
     retrieval_options: RetrievalOptions | None = None
     rerank_options: RerankOptions | None = None
 
-    @field_validator("tenant_id", "kb_id", "user_id", "query")
+    @field_validator("kb_id", "user_id", "query")
     @classmethod
     def reject_blank(cls, value: str) -> str:
         value = value.strip()

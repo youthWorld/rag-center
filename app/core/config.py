@@ -5,6 +5,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     app_env: str = "local"
+    auth_enabled: bool = True
     database_url: str = "postgresql+psycopg://postgres:postgres@localhost:5432/rag_center"
 
     model_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"

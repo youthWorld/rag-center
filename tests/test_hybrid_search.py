@@ -170,7 +170,6 @@ async def test_rag_service_runs_vector_and_bm25_in_hybrid_mode() -> None:
 
     response = await service.retrieve(
         RagRetrieveRequest(
-            tenant_id="tenant-test",
             kb_id="kb-test",
             user_id="user-test",
             query="refund",
@@ -181,7 +180,8 @@ async def test_rag_service_runs_vector_and_bm25_in_hybrid_mode() -> None:
                 "bm25_top_k": 2,
                 "rrf_k": 60,
             },
-        )
+        ),
+        tenant_id="tenant-test",
     )
 
     assert embedding_provider.query_calls == 1
@@ -220,12 +220,12 @@ async def test_hybrid_search_degrades_to_vector_results_when_bm25_fails() -> Non
 
     response = await service.retrieve(
         RagRetrieveRequest(
-            tenant_id="tenant-test",
             kb_id="kb-test",
             user_id="user-test",
             query="refund",
             retrieval_options={"mode": "hybrid"},
-        )
+        ),
+        tenant_id="tenant-test",
     )
 
     assert [chunk.chunk_id for chunk in response.retrieved_chunks] == ["chunk-1", "chunk-2"]
@@ -246,11 +246,11 @@ async def test_bm25_mode_does_not_call_embedding() -> None:
 
     response = await service.retrieve(
         RagRetrieveRequest(
-            tenant_id="tenant-test",
             kb_id="kb-test",
             user_id="user-test",
             query="refund",
-        )
+        ),
+        tenant_id="tenant-test",
     )
 
     assert embedding_provider.query_calls == 0

@@ -47,16 +47,18 @@ class RagService:
         self.rerank_provider = rerank_provider or NoopRerankProvider()
         self.logger = get_logger(__name__)
 
-    async def retrieve(self, request: RagRetrieveRequest) -> RagRetrieveResponse:
+    async def retrieve(
+        self, request: RagRetrieveRequest, *, tenant_id: str
+    ) -> RagRetrieveResponse:
         self.logger.info(
             "BUSINESS_EVENT | event=rag_retrieval_started | kb_id=%s | tenant_id=%s | user_id=%s",
             request.kb_id,
-            request.tenant_id,
+            tenant_id,
             request.user_id,
         )
         knowledge_base = await self.knowledge_base_repository.get_by_id(
             kb_id=request.kb_id,
-            tenant_id=request.tenant_id,
+            tenant_id=tenant_id,
         )
         if knowledge_base is None:
             raise KnowledgeBaseNotFoundError()
@@ -71,7 +73,7 @@ class RagService:
             self.logger.info(
                 "HYBRID_SEARCH_START | tenant_id=%s | kb_id=%s | query=%s | "
                 "vector_top_k=%s | bm25_top_k=%s",
-                request.tenant_id,
+                tenant_id,
                 knowledge_base.id,
                 request.query,
                 vector_top_k,
@@ -85,14 +87,14 @@ class RagService:
             query_vector = await self.embedding_provider.embed_query(request.query)
             vector_results = await self.vector_store.similarity_search(
                 query_vector,
-                tenant_id=request.tenant_id,
+                tenant_id=tenant_id,
                 kb_id=knowledge_base.id,
                 top_k=vector_top_k,
             )
             self.logger.info(
                 "VECTOR_SEARCH_SUCCESS | tenant_id=%s | kb_id=%s | query=%s | "
                 "vector_top_k=%s | vector_count=%s | cost_ms=%s",
-                request.tenant_id,
+                tenant_id,
                 knowledge_base.id,
                 request.query,
                 vector_top_k,
@@ -113,7 +115,7 @@ class RagService:
             try:
                 bm25_results = await keyword_search_provider.keyword_search(
                     query=request.query,
-                    tenant_id=request.tenant_id,
+                    tenant_id=tenant_id,
                     kb_id=knowledge_base.id,
                     top_k=bm25_top_k,
                 )
@@ -126,7 +128,7 @@ class RagService:
                     "BM25_SEARCH_FAILED | tenant_id=%s | kb_id=%s | query=%s | "
                     "vector_top_k=%s | bm25_top_k=%s | vector_count=%s | "
                     "bm25_count=%s | fused_count=%s | cost_ms=%s | error=%s",
-                    request.tenant_id,
+                    tenant_id,
                     knowledge_base.id,
                     request.query,
                     vector_top_k,
@@ -140,7 +142,7 @@ class RagService:
                 self.logger.warning(
                     "HYBRID_SEARCH_DEGRADED | tenant_id=%s | kb_id=%s | query=%s | "
                     "degraded_reason=%s | vector_count=%s | cost_ms=%s",
-                    request.tenant_id,
+                    tenant_id,
                     knowledge_base.id,
                     request.query,
                     degraded_reason,
@@ -151,7 +153,7 @@ class RagService:
                 self.logger.info(
                     "BM25_SEARCH_SUCCESS | tenant_id=%s | kb_id=%s | query=%s | "
                     "bm25_top_k=%s | bm25_count=%s | cost_ms=%s",
-                    request.tenant_id,
+                    tenant_id,
                     knowledge_base.id,
                     request.query,
                     bm25_top_k,
@@ -179,7 +181,7 @@ class RagService:
             self.logger.info(
                 "RRF_FUSION_SUCCESS | tenant_id=%s | kb_id=%s | query=%s | "
                 "vector_count=%s | bm25_count=%s | fused_count=%s | cost_ms=%s",
-                request.tenant_id,
+                tenant_id,
                 knowledge_base.id,
                 request.query,
                 len(vector_results),
@@ -245,7 +247,7 @@ class RagService:
         ]
         serialized_chunks = [chunk.model_dump() for chunk in retrieved_chunks]
         await self.retrieval_log_repository.create(
-            tenant_id=request.tenant_id,
+            tenant_id=tenant_id,
             kb_id=knowledge_base.id,
             user_id=request.user_id,
             query=request.query,
@@ -260,7 +262,7 @@ class RagService:
             "kb_id=%s | query=%s | vector_top_k=%s | bm25_top_k=%s | "
             "vector_count=%s | bm25_count=%s | fused_count=%s | chunk_count=%s | "
             "latency_ms=%s | cost_ms=%s",
-            request.tenant_id,
+            tenant_id,
             knowledge_base.id,
             request.query,
             vector_top_k,

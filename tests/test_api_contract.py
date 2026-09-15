@@ -8,6 +8,8 @@ from app.api.dependencies import (
     get_knowledge_base_service,
     get_rag_service,
 )
+from app.api.v1.deps import get_current_tenant
+from app.core.auth import TenantContext
 from app.main import app
 from app.schemas.document import DocumentUploadResponse
 from app.schemas.knowledge_base import KnowledgeBaseResponse
@@ -15,20 +17,22 @@ from app.schemas.rag import RagRetrieveResponse, RetrievedChunk
 
 
 class FakeKnowledgeBaseService:
-    async def create(self, _request) -> KnowledgeBaseResponse:
+    async def create(self, _request, *, tenant_id: str) -> KnowledgeBaseResponse:
         return KnowledgeBaseResponse(
             kb_id="kb-test",
             name="Test KB",
-            tenant_id="tenant-test",
+            tenant_id=tenant_id,
             created_at=datetime(2026, 1, 1, tzinfo=UTC),
         )
 
-    async def list_tree(self, *, keyword=None):
+    async def list_tree(self, *, tenant_id: str, keyword=None):
+        del tenant_id
         return []
 
 
 class FakeDocumentService:
-    async def upload(self, _request) -> DocumentUploadResponse:
+    async def upload(self, _request, *, tenant_id: str) -> DocumentUploadResponse:
+        del tenant_id
         return DocumentUploadResponse(
             document_id="document-test",
             kb_id="kb-test",
@@ -38,7 +42,8 @@ class FakeDocumentService:
 
 
 class FakeRagService:
-    async def retrieve(self, request) -> RagRetrieveResponse:
+    async def retrieve(self, request, *, tenant_id: str) -> RagRetrieveResponse:
+        del tenant_id
         return RagRetrieveResponse(
             query=request.query,
             kb_id=request.kb_id,
@@ -57,6 +62,13 @@ class FakeRagService:
 
 @pytest.fixture(autouse=True)
 def override_services():
+    app.dependency_overrides[get_current_tenant] = lambda: TenantContext(
+        tenant_id="tenant-test",
+        tenant_name="Test tenant",
+        key_id="key-test",
+        key_prefix="rk_test",
+        key_name="test",
+    )
     app.dependency_overrides[get_knowledge_base_service] = lambda: FakeKnowledgeBaseService()
     app.dependency_overrides[get_document_service] = lambda: FakeDocumentService()
     app.dependency_overrides[get_rag_service] = lambda: FakeRagService()
@@ -67,6 +79,7 @@ def override_services():
 @pytest.mark.asyncio
 async def test_business_routes_are_exposed() -> None:
     assert sorted(app.openapi()["paths"]) == [
+        "/api/v1/auth/me",
         "/api/v1/documents/upload",
         "/api/v1/knowledge-bases/create",
         "/api/v1/knowledge-bases/tree",
@@ -80,12 +93,11 @@ async def test_business_routes_use_uniform_success_response() -> None:
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         create_response = await client.post(
             "/api/v1/knowledge-bases/create",
-            json={"name": "Test KB", "description": "desc", "tenant_id": "tenant-test"},
+            json={"name": "Test KB", "description": "desc", "tenant_id": "ignored"},
         )
         upload_response = await client.post(
             "/api/v1/documents/upload",
             json={
-                "tenant_id": "tenant-test",
                 "kb_id": "kb-test",
                 "title": "Test",
                 "content": "content",
@@ -94,7 +106,6 @@ async def test_business_routes_use_uniform_success_response() -> None:
         retrieve_response = await client.post(
             "/api/v1/rag/retrieve",
             json={
-                "tenant_id": "tenant-test",
                 "kb_id": "kb-test",
                 "user_id": "user-test",
                 "query": "question",

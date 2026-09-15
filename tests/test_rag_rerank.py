@@ -109,13 +109,13 @@ async def test_rag_service_returns_reranked_chunks_and_metadata() -> None:
 
     response = await service.retrieve(
         RagRetrieveRequest(
-            tenant_id="tenant-test",
             kb_id="kb-test",
             user_id="user-test",
             query="question",
             top_k=2,
             rerank_options={"enabled": True, "top_n": 1},
-        )
+        ),
+        tenant_id="tenant-test",
     )
 
     assert [chunk.chunk_id for chunk in response.retrieved_chunks] == ["chunk-2"]
@@ -138,12 +138,12 @@ async def test_rag_service_degrades_to_vector_order_when_rerank_fails() -> None:
 
     response = await service.retrieve(
         RagRetrieveRequest(
-            tenant_id="tenant-test",
             kb_id="kb-test",
             user_id="user-test",
             query="question",
             rerank_options={"enabled": True, "top_n": 1},
-        )
+        ),
+        tenant_id="tenant-test",
     )
 
     assert [chunk.chunk_id for chunk in response.retrieved_chunks] == ["chunk-1", "chunk-2"]
@@ -160,12 +160,12 @@ async def test_request_can_disable_globally_enabled_rerank() -> None:
 
     response = await service.retrieve(
         RagRetrieveRequest(
-            tenant_id="tenant-test",
             kb_id="kb-test",
             user_id="user-test",
             query="question",
             rerank_options={"enabled": False},
-        )
+        ),
+        tenant_id="tenant-test",
     )
 
     assert not rerank_provider.calls
@@ -181,13 +181,13 @@ async def test_rag_service_limits_candidates_before_provider() -> None:
 
     response = await service.retrieve(
         RagRetrieveRequest(
-            tenant_id="tenant-test",
             kb_id="kb-test",
             user_id="user-test",
             query="question",
             top_k=2,
             rerank_options={"enabled": True, "top_n": 1},
-        )
+        ),
+        tenant_id="tenant-test",
     )
 
     assert len(rerank_provider.calls) == 1
