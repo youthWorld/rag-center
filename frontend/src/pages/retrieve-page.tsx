@@ -14,6 +14,7 @@ import { useState, type FormEvent, type ReactNode } from "react";
 import { useSearchParams } from "react-router-dom";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
+import { HelpTooltip } from "../components/ui/help-tooltip";
 import { Input } from "../components/ui/input";
 import { Textarea } from "../components/ui/textarea";
 import { getApiErrorMessage } from "../lib/api";
@@ -28,7 +29,6 @@ const retrievalModes: Array<{ value: RetrievalMode; label: string; description: 
 
 export function RetrievePage() {
   const [searchParams] = useSearchParams();
-  const [tenantId, setTenantId] = useState(() => searchParams.get("tenant_id") ?? "");
   const [kbId, setKbId] = useState(() => searchParams.get("kb_id") ?? "");
   const [query, setQuery] = useState("");
   const [topK, setTopK] = useState("5");
@@ -46,11 +46,10 @@ export function RetrievePage() {
     event.preventDefault();
     setError(null);
 
-    const normalizedTenantId = tenantId.trim();
     const normalizedKbId = kbId.trim();
     const normalizedQuery = query.trim();
-    if (!normalizedTenantId || !normalizedKbId || !normalizedQuery) {
-      setError("tenant_id、kb_id 和 query 都是必填项。");
+    if (!normalizedKbId || !normalizedQuery) {
+      setError("kb_id 和 query 都是必填项。");
       return;
     }
 
@@ -74,7 +73,6 @@ export function RetrievePage() {
     }
 
     const payload: RetrievePayload = {
-      tenant_id: normalizedTenantId,
       kb_id: normalizedKbId,
       user_id: "debug_user",
       query: normalizedQuery,
@@ -130,10 +128,7 @@ export function RetrievePage() {
         <div className="space-y-6 px-5 py-6 sm:px-6">
           <div className="rounded-xl border border-line bg-paper/70 p-4 sm:p-5">
             <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-muted">检索范围</p>
-            <div className="mt-4 grid gap-4 lg:grid-cols-2">
-              <FieldRow label="tenant_id" required>
-                <Input value={tenantId} onChange={(event) => setTenantId(event.target.value)} placeholder="例如：tech_position" />
-              </FieldRow>
+            <div className="mt-4 grid gap-4">
               <FieldRow label="kb_id" required>
                 <Input value={kbId} onChange={(event) => setKbId(event.target.value)} placeholder="知识库 ID" />
               </FieldRow>
@@ -143,10 +138,10 @@ export function RetrievePage() {
           <div>
             <p className="border-b border-line pb-3 text-[10px] font-bold uppercase tracking-[0.16em] text-muted">检索参数</p>
             <div className="mt-4 space-y-4">
-              <FieldRow label="top_k">
+              <FieldRow label="top_k" help="最终返回的 chunk 数量。数值越大，结果覆盖面越广，但响应内容也会更多。">
                 <Input type="number" min={1} value={topK} onChange={(event) => setTopK(event.target.value)} className="max-w-[180px]" />
               </FieldRow>
-              <FieldRow label="检索模式">
+              <FieldRow label="检索模式" help="vector 适合语义相似问题，bm25 适合关键词匹配，hybrid 会融合两路结果。">
                 <div role="radiogroup" aria-label="检索模式" className="grid max-w-[620px] grid-cols-1 gap-2 sm:grid-cols-3">
                   {retrievalModes.map((item) => {
                     const active = mode === item.value;
@@ -173,15 +168,15 @@ export function RetrievePage() {
                 </div>
               </FieldRow>
               {mode === "hybrid" && (
-                <FieldRow label="hybrid 参数">
+                <FieldRow label="hybrid 参数" help="hybrid 会分别召回向量和关键词结果，再用 RRF 合并排序。">
                   <div className="grid gap-3 sm:grid-cols-3">
-                    <CompactNumberField label="vector_top_k" value={vectorTopK} onChange={setVectorTopK} />
-                    <CompactNumberField label="bm25_top_k" value={bm25TopK} onChange={setBm25TopK} />
-                    <CompactNumberField label="rrf_k" value={rrfK} onChange={setRrfK} />
+                    <CompactNumberField label="vector_top_k" help="向量召回阶段保留的候选数量。" value={vectorTopK} onChange={setVectorTopK} />
+                    <CompactNumberField label="bm25_top_k" help="BM25 关键词召回阶段保留的候选数量。" value={bm25TopK} onChange={setBm25TopK} />
+                    <CompactNumberField label="rrf_k" help="RRF 融合中的平滑常数，用于降低单一路径高排名的影响。" value={rrfK} onChange={setRrfK} />
                   </div>
                 </FieldRow>
               )}
-              <FieldRow label="rerank">
+              <FieldRow label="rerank" help="对初步召回结果再次排序，通常能提升相关性，但会增加处理耗时。">
                 <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
                   <label className="inline-flex h-11 w-fit cursor-pointer items-center gap-2.5 rounded-xl border border-line bg-white px-3.5 text-sm font-semibold text-ink">
                     <input
@@ -271,29 +266,47 @@ export function RetrievePage() {
 function FieldRow({
   label,
   required,
+  help,
   alignTop = false,
   children,
 }: {
   label: string;
   required?: boolean;
+  help?: ReactNode;
   alignTop?: boolean;
   children: ReactNode;
 }) {
   return (
     <div className={`grid gap-2 sm:grid-cols-[100px_minmax(0,1fr)] sm:gap-4 ${alignTop ? "sm:items-start" : "sm:items-center"}`}>
       <div className={`text-sm font-bold text-ink sm:pt-2 sm:text-right ${alignTop ? "sm:pt-3" : ""}`}>
-        {label}
-        {required && <span className="ml-1 text-ember">*</span>}
+        <span className="inline-flex items-center gap-1">
+          {label}
+          {required && <span className="text-ember">*</span>}
+          {help && <HelpTooltip content={help} label={`${label} 参数说明`} placement="right" />}
+        </span>
       </div>
       <div className="min-w-0">{children}</div>
     </div>
   );
 }
 
-function CompactNumberField({ label, value, onChange }: { label: string; value: string; onChange: (value: string) => void }) {
+function CompactNumberField({
+  label,
+  help,
+  value,
+  onChange,
+}: {
+  label: string;
+  help?: ReactNode;
+  value: string;
+  onChange: (value: string) => void;
+}) {
   return (
     <label className="block">
-      <span className="mb-1.5 block text-[11px] font-semibold text-muted">{label}</span>
+      <span className="mb-1.5 flex items-center gap-1 text-[11px] font-semibold text-muted">
+        {label}
+        {help && <HelpTooltip content={help} label={`${label} 参数说明`} />}
+      </span>
       <Input type="number" min={1} value={value} onChange={(event) => onChange(event.target.value)} />
     </label>
   );
@@ -317,13 +330,13 @@ function RetrievedChunkRow({ chunk, index }: { chunk: RetrievedChunk; index: num
             </div>
           </div>
           <div className="grid grid-cols-2 gap-x-5 gap-y-2 text-xs lg:min-w-[360px] lg:grid-cols-4">
-            <ScoreMetric label="vector" score={chunk.vector_score} rank={chunk.vector_rank} />
-            <ScoreMetric label="bm25" score={chunk.bm25_score} rank={chunk.bm25_rank} />
-            <ScoreMetric label="rerank" score={chunk.rerank_score} rank={chunk.rerank_score == null ? null : index + 1} />
-            <div>
-              <span className="block text-[10px] font-bold uppercase tracking-[0.12em] text-muted">position</span>
-              <span className="mt-1 block font-mono font-bold text-ink">#{index + 1}</span>
-            </div>
+             <ScoreMetric label="vector" help="向量相似度召回分数及其原始排名。" score={chunk.vector_score} rank={chunk.vector_rank} />
+             <ScoreMetric label="bm25" help="BM25 关键词召回分数及其原始排名。" score={chunk.bm25_score} rank={chunk.bm25_rank} />
+             <ScoreMetric label="rerank" help="重排模型对该 chunk 的最终评分及排名。" score={chunk.rerank_score} rank={chunk.rerank_score == null ? null : index + 1} />
+             <div>
+               <MetricLabel label="position" help="该 chunk 在最终返回结果中的位置。" />
+               <span className="mt-1 block font-mono font-bold text-ink">#{index + 1}</span>
+             </div>
           </div>
         </div>
         <details className="group rounded-lg border border-line bg-paper/60">
@@ -340,14 +353,33 @@ function RetrievedChunkRow({ chunk, index }: { chunk: RetrievedChunk; index: num
   );
 }
 
-function ScoreMetric({ label, score, rank }: { label: string; score?: number | null; rank?: number | null }) {
+function ScoreMetric({
+  label,
+  help,
+  score,
+  rank,
+}: {
+  label: string;
+  help?: ReactNode;
+  score?: number | null;
+  rank?: number | null;
+}) {
   return (
     <div>
-      <span className="block text-[10px] font-bold uppercase tracking-[0.12em] text-muted">{label}</span>
+      <MetricLabel label={label} help={help} />
       <span className="mt-1 block font-mono font-bold text-ink">
         {score == null ? "—" : `${formatScore(score)} · #${rank ?? "—"}`}
       </span>
     </div>
+  );
+}
+
+function MetricLabel({ label, help }: { label: string; help?: ReactNode }) {
+  return (
+    <span className="flex items-center gap-1 text-[10px] font-bold uppercase tracking-[0.12em] text-muted">
+      {label}
+      {help && <HelpTooltip content={help} label={`${label} 指标说明`} />}
+    </span>
   );
 }
 

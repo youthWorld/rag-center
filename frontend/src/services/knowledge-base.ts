@@ -7,12 +7,10 @@ import type {
 
 export type CreateKnowledgeBasePayload = {
   name: string;
-  tenant_id: string;
   description?: string;
 };
 
 export type UploadDocumentPayload = {
-  tenant_id: string;
   kb_id: string;
   title: string;
   content: string;

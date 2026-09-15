@@ -6,7 +6,6 @@ import type {
 } from "../types";
 
 export type RetrievePayload = {
-  tenant_id: string;
   kb_id: string;
   user_id: string;
   query: string;

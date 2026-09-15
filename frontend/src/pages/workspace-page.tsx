@@ -29,24 +29,12 @@ import { useCreateKnowledgeBase } from "../hooks/use-knowledge-base";
 import { fetchKnowledgeBaseTree, uploadDocument } from "../services/knowledge-base";
 import type { KnowledgeBase, UploadItem, UploadState } from "../types";
 
-const LAST_KB_KEY = "rag-center:last-knowledge-base";
-
 const knowledgeBaseSchema = z.object({
   name: z.string().trim().min(1, "请输入知识库名称").max(255, "名称不能超过 255 个字符"),
-  tenantId: z.string().trim().min(1, "请输入租户标识").max(128, "租户标识不能超过 128 个字符"),
   description: z.string().max(5000, "描述不能超过 5000 个字符").optional(),
 });
 
 type KnowledgeBaseForm = z.infer<typeof knowledgeBaseSchema>;
-
-function getStoredKnowledgeBase(): KnowledgeBase | null {
-  try {
-    const raw = localStorage.getItem(LAST_KB_KEY);
-    return raw ? (JSON.parse(raw) as KnowledgeBase) : null;
-  } catch {
-    return null;
-  }
-}
 
 function statusLabel(state: UploadState) {
   switch (state) {
@@ -83,14 +71,9 @@ function StatusIcon({ state }: { state: UploadState }) {
 
 export function WorkspacePage() {
   const [searchParams] = useSearchParams();
-  const tenantIdFromQuery = searchParams.get("tenant_id")?.trim() ?? "";
   const kbIdFromQuery = searchParams.get("kb_id")?.trim() ?? "";
-  const [knowledgeBase, setKnowledgeBase] = useState<KnowledgeBase | null>(() =>
-    tenantIdFromQuery && kbIdFromQuery ? null : getStoredKnowledgeBase(),
-  );
-  const [isResolvingKnowledgeBase, setIsResolvingKnowledgeBase] = useState(
-    Boolean(tenantIdFromQuery && kbIdFromQuery),
-  );
+  const [knowledgeBase, setKnowledgeBase] = useState<KnowledgeBase | null>(null);
+  const [isResolvingKnowledgeBase, setIsResolvingKnowledgeBase] = useState(Boolean(kbIdFromQuery));
   const [isCreateOpen, setIsCreateOpen] = useState(false);
   const [uploadItems, setUploadItems] = useState<UploadItem[]>([]);
   const [isDragging, setIsDragging] = useState(false);
@@ -100,29 +83,32 @@ export function WorkspacePage() {
   const folderInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    if (!tenantIdFromQuery || !kbIdFromQuery) {
+    if (!kbIdFromQuery) {
+      setKnowledgeBase(null);
       setIsResolvingKnowledgeBase(false);
       return;
     }
 
     let cancelled = false;
     setIsResolvingKnowledgeBase(true);
-    fetchKnowledgeBaseTree(tenantIdFromQuery)
+    fetchKnowledgeBaseTree()
       .then((tree) => {
         if (cancelled) return;
         const selected = tree
-          .flatMap((tenant) => tenant.knowledge_bases)
-          .find((item) => item.kb_id === kbIdFromQuery);
+          .flatMap((tenant) =>
+            tenant.knowledge_bases.map((item) => ({ item, tenantId: tenant.tenant_id })),
+          )
+          .find(({ item }) => item.kb_id === kbIdFromQuery);
         if (!selected) {
           setKnowledgeBase(null);
           setToast("没有找到 URL 中指定的知识库");
           return;
         }
         setKnowledgeBase({
-          kb_id: selected.kb_id,
-          name: selected.name,
-          tenant_id: tenantIdFromQuery,
-          created_at: selected.created_at,
+          kb_id: selected.item.kb_id,
+          name: selected.item.name,
+          tenant_id: selected.tenantId,
+          created_at: selected.item.created_at,
         });
       })
       .catch((error) => {
@@ -138,7 +124,7 @@ export function WorkspacePage() {
     return () => {
       cancelled = true;
     };
-  }, [kbIdFromQuery, tenantIdFromQuery]);
+  }, [kbIdFromQuery]);
 
   useEffect(() => {
     if (!toast) return;
@@ -191,7 +177,6 @@ export function WorkspacePage() {
         const content = await item.file.text();
         if (!content.trim()) throw new Error("文件内容为空");
         const response = await uploadDocument({
-          tenant_id: knowledgeBase.tenant_id,
           kb_id: knowledgeBase.kb_id,
           title: item.file.name,
           content,
@@ -222,7 +207,6 @@ export function WorkspacePage() {
   const handleCreated = (created: KnowledgeBase) => {
     setKnowledgeBase(created);
     setUploadItems([]);
-    localStorage.setItem(LAST_KB_KEY, JSON.stringify(created));
     setIsCreateOpen(false);
     setToast(`知识库“${created.name}”已创建`);
   };
@@ -274,9 +258,12 @@ export function WorkspacePage() {
                     <span className="h-1.5 w-1.5 rounded-full bg-moss" />
                     当前工作区
                   </Badge>
+                  <Badge className="border-line bg-paper font-mono text-muted">
+                    租户：{knowledgeBase.tenant_id}
+                  </Badge>
                 </div>
                 <p className="mt-1 break-all text-xs text-muted">
-                  {knowledgeBase.kb_id} · {knowledgeBase.tenant_id} · 创建于 {formatDate(knowledgeBase.created_at)}
+                  kb_id：{knowledgeBase.kb_id} · 创建于 {formatDate(knowledgeBase.created_at)}
                 </p>
               </div>
             </div>
@@ -499,7 +486,6 @@ export function WorkspacePage() {
         onClose={() => setIsCreateOpen(false)}
         onCreated={handleCreated}
         onError={setToast}
-        initialTenantId={tenantIdFromQuery || "tenant_demo"}
       />
 
       {toast && (
@@ -564,13 +550,11 @@ function CreateKnowledgeBaseDialog({
   onClose,
   onCreated,
   onError,
-  initialTenantId,
 }: {
   open: boolean;
   onClose: () => void;
   onCreated: (knowledgeBase: KnowledgeBase) => void;
   onError: (message: string) => void;
-  initialTenantId: string;
 }) {
   const mutation = useCreateKnowledgeBase();
   const {
@@ -581,15 +565,14 @@ function CreateKnowledgeBaseDialog({
   } = useForm<KnowledgeBaseForm>({
     resolver: zodResolver(knowledgeBaseSchema),
     defaultValues: {
-      tenantId: initialTenantId,
       name: "",
       description: "",
     },
   });
 
   useEffect(() => {
-    if (open) reset({ tenantId: initialTenantId, name: "", description: "" });
-  }, [initialTenantId, open, reset]);
+    if (open) reset({ name: "", description: "" });
+  }, [open, reset]);
 
   useEffect(() => {
     if (!open) return;
@@ -604,7 +587,6 @@ function CreateKnowledgeBaseDialog({
     mutation.mutate(
       {
         name: values.name.trim(),
-        tenant_id: values.tenantId.trim(),
         description: values.description?.trim() || undefined,
       },
       {
@@ -638,9 +620,6 @@ function CreateKnowledgeBaseDialog({
         <form onSubmit={handleSubmit(submit)} className="space-y-5 px-6 py-6">
           <Field label="知识库名称" required error={errors.name?.message}>
             <Input placeholder="例如：退款政策样本集" {...register("name")} />
-          </Field>
-          <Field label="租户标识" required hint="用于调用现有后端接口，默认使用 tenant_demo。" error={errors.tenantId?.message}>
-            <Input placeholder="tenant_demo" {...register("tenantId")} />
           </Field>
           <Field label="描述" hint="可选，用来记录这批数据的用途。" error={errors.description?.message}>
             <Textarea placeholder="例如：用于比较不同 rerank prompt 的退款问答样本" {...register("description")} />

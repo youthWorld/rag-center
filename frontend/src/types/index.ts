@@ -26,6 +26,13 @@ export type KnowledgeBaseTenantTree = {
   knowledge_bases: KnowledgeBaseTreeItem[];
 };
 
+export type AuthMeData = {
+  tenant_id: string;
+  tenant_name: string;
+  key_prefix?: string | null;
+  key_name?: string | null;
+};
+
 export type DocumentUploadResponse = {
   document_id: string;
   kb_id: string;

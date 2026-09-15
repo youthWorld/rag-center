@@ -9,7 +9,7 @@ import {
   Search,
   Upload,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { Badge } from "../components/ui/badge";
@@ -17,11 +17,12 @@ import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { getApiErrorMessage } from "../lib/api";
 import { cn, formatDate } from "../lib/utils";
+import { authService } from "../services/authService";
 import { knowledgeBaseService } from "../services/knowledge-base";
-import type { KnowledgeBaseTenantTree } from "../types";
+import type { AuthMeData, KnowledgeBaseTenantTree } from "../types";
 
-function getKnowledgeBaseKey(tenantId: string, kbId: string) {
-  return `${tenantId}:${kbId}`;
+function getKnowledgeBaseKey(kbId: string) {
+  return kbId;
 }
 
 function getActionLinkClass() {
@@ -32,6 +33,10 @@ export function KnowledgeFileTreePage() {
   const [keyword, setKeyword] = useState("");
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [notice, setNotice] = useState<string | null>(null);
+  const authQuery = useQuery<AuthMeData>({
+    queryKey: ["auth-me"],
+    queryFn: authService.fetchAuthMe,
+  });
   const treeQuery = useQuery<KnowledgeBaseTenantTree[]>({
     queryKey: ["knowledge-base-tree", keyword.trim()],
     queryFn: () => knowledgeBaseService.fetchTree(keyword),
@@ -44,21 +49,16 @@ export function KnowledgeFileTreePage() {
   }, [notice]);
 
   const tree = treeQuery.data ?? [];
-  const totals = useMemo(
-    () =>
-      tree.reduce(
-        (summary, tenant) => {
-          summary.tenants += 1;
-          summary.knowledgeBases += tenant.knowledge_bases.length;
-          summary.documents += tenant.knowledge_bases.reduce(
-            (count, knowledgeBase) => count + knowledgeBase.documents.length,
-            0,
-          );
-          return summary;
-        },
-        { tenants: 0, knowledgeBases: 0, documents: 0 },
-      ),
+  const knowledgeBases = useMemo(
+    () => tree.flatMap((tenant) => tenant.knowledge_bases),
     [tree],
+  );
+  const totals = useMemo(
+    () => ({
+      knowledgeBases: knowledgeBases.length,
+      documents: knowledgeBases.reduce((count, knowledgeBase) => count + knowledgeBase.documents.length, 0),
+    }),
+    [knowledgeBases],
   );
 
   const toggle = (key: string) => {
@@ -89,13 +89,26 @@ export function KnowledgeFileTreePage() {
           </div>
           <h1 className="text-balance text-3xl font-bold tracking-[-0.04em] text-ink md:text-[40px]">知识库列表</h1>
           <p className="mt-3 max-w-[680px] text-sm leading-6 text-muted md:text-[15px]">
-            从后端读取所有租户、知识库和已完成索引的文档，快速回到上传工作区或验证检索效果。
+            从当前租户读取知识库和已完成索引的文档，快速回到上传工作区或验证检索效果。
           </p>
         </div>
-        <div className="grid grid-cols-3 divide-x divide-line rounded-xl border border-line bg-white px-1 py-3 sm:min-w-[330px]">
-          <SummaryStat label="租户" value={totals.tenants} />
-          <SummaryStat label="知识库" value={totals.knowledgeBases} />
-          <SummaryStat label="成功文档" value={totals.documents} />
+        <div className="flex flex-col items-stretch gap-3 lg:items-end">
+          <div className="flex flex-wrap justify-end gap-2">
+            {authQuery.isLoading && <Badge className="border-line bg-white text-muted">正在读取租户</Badge>}
+            {authQuery.data && (
+              <>
+                <Badge className="border-moss/15 bg-moss/8 text-moss">租户：{authQuery.data.tenant_name}</Badge>
+                <Badge className="border-line bg-white font-mono text-muted">ID：{authQuery.data.tenant_id}</Badge>
+              </>
+            )}
+            {authQuery.isError && (
+              <Badge className="border-red-200 bg-red-50 text-danger">{getApiErrorMessage(authQuery.error)}</Badge>
+            )}
+          </div>
+          <div className="grid grid-cols-2 divide-x divide-line rounded-xl border border-line bg-white px-1 py-3 sm:min-w-[220px]">
+            <SummaryStat label="知识库" value={totals.knowledgeBases} />
+            <SummaryStat label="成功文档" value={totals.documents} />
+          </div>
         </div>
       </section>
 
@@ -112,8 +125,8 @@ export function KnowledgeFileTreePage() {
                 value={keyword}
                 onChange={(event) => setKeyword(event.target.value)}
                 className="pl-10"
-                placeholder="按 tenant_id 搜索"
-                aria-label="按租户标识搜索"
+                placeholder="按知识库名称搜索"
+                aria-label="按知识库名称搜索"
               />
             </div>
             <Button
@@ -122,16 +135,19 @@ export function KnowledgeFileTreePage() {
               size="icon"
               title="刷新列表"
               aria-label="刷新列表"
-              onClick={() => void treeQuery.refetch()}
-              disabled={treeQuery.isFetching}
+              onClick={() => {
+                void treeQuery.refetch();
+                void authQuery.refetch();
+              }}
+              disabled={treeQuery.isFetching || authQuery.isFetching}
             >
-              <RefreshCw size={16} className={treeQuery.isFetching ? "animate-spin" : ""} />
+              <RefreshCw size={16} className={treeQuery.isFetching || authQuery.isFetching ? "animate-spin" : ""} />
             </Button>
           </div>
         </div>
 
         {treeQuery.isLoading ? (
-          <TreeState icon={<RefreshCw size={22} className="animate-spin" />} title="正在读取知识库" description="正在从后端加载租户和文档信息。" />
+          <TreeState icon={<RefreshCw size={22} className="animate-spin" />} title="正在读取知识库" description="正在从后端加载当前租户的知识库和文档信息。" />
         ) : treeQuery.isError ? (
           <TreeState
             icon={<Database size={22} />}
@@ -144,11 +160,11 @@ export function KnowledgeFileTreePage() {
               </Button>
             }
           />
-        ) : tree.length === 0 ? (
+        ) : knowledgeBases.length === 0 ? (
           <TreeState
             icon={<Database size={22} />}
-            title={keyword.trim() ? "没有匹配的租户" : "还没有知识库"}
-            description={keyword.trim() ? "换一个 tenant_id 关键词试试。" : "先从知识库上传页创建一个知识库。"}
+            title={keyword.trim() ? "没有匹配的知识库" : "还没有知识库"}
+            description={keyword.trim() ? "换一个知识库名称关键词试试。" : "先从知识库上传页创建一个知识库。"}
             action={
               !keyword.trim() ? (
                 <Button asChild size="sm">
@@ -161,132 +177,98 @@ export function KnowledgeFileTreePage() {
             }
           />
         ) : (
-          <div role="table" aria-label="知识库树" className="divide-y divide-line">
+          <div role="table" aria-label="知识库与文档列表" className="divide-y divide-line">
             <div role="row" className="hidden grid-cols-[minmax(0,1.45fr)_minmax(180px,1fr)_minmax(110px,0.65fr)_minmax(220px,auto)] gap-4 bg-paper/70 px-5 py-3 text-[10px] font-bold uppercase tracking-[0.16em] text-muted sm:grid sm:px-6">
               <span role="columnheader">名称</span>
-              <span role="columnheader">标识</span>
+              <span role="columnheader">kb_id</span>
               <span role="columnheader">文档</span>
               <span role="columnheader" className="text-right">操作</span>
             </div>
-            {tree.map((tenant) => {
-              const tenantKey = `tenant:${tenant.tenant_id}`;
-              const tenantExpanded = !collapsed.has(tenantKey);
-              const documentCount = tenant.knowledge_bases.reduce(
-                (count, knowledgeBase) => count + knowledgeBase.documents.length,
-                0,
-              );
+            {knowledgeBases.map((knowledgeBase) => {
+              const kbKey = getKnowledgeBaseKey(knowledgeBase.kb_id);
+              const knowledgeBaseExpanded = !collapsed.has(kbKey);
               return (
-                <div role="rowgroup" key={tenant.tenant_id}>
-                  <div role="row" className="bg-[#f7faf8] px-5 py-4 sm:px-6">
-                    <button
-                      type="button"
-                      className="flex w-full items-center justify-between gap-4 text-left"
-                      onClick={() => toggle(tenantKey)}
-                      aria-expanded={tenantExpanded}
-                    >
-                      <span className="flex min-w-0 items-center gap-2.5">
-                        {tenantExpanded ? <ChevronDown size={17} className="shrink-0 text-moss" /> : <ChevronRight size={17} className="shrink-0 text-muted" />}
-                        <span className="truncate text-sm font-bold text-ink">{tenant.tenant_id}</span>
-                        <Badge className="border-moss/15 bg-moss/8 text-moss">
-                          {tenant.knowledge_bases.length} 个知识库
-                        </Badge>
-                      </span>
-                      <span className="hidden shrink-0 text-xs text-muted sm:inline">{documentCount} 个成功文档</span>
-                    </button>
+                <div role="rowgroup" key={knowledgeBase.kb_id} className="bg-white">
+                  <div role="row" className="grid gap-3 px-5 py-4 sm:grid-cols-[minmax(0,1.45fr)_minmax(180px,1fr)_minmax(110px,0.65fr)_minmax(220px,auto)] sm:items-center sm:gap-4 sm:px-6">
+                    <div className="min-w-0">
+                      <button
+                        type="button"
+                        className="flex min-w-0 items-start gap-2.5 text-left"
+                        onClick={() => toggle(kbKey)}
+                        aria-expanded={knowledgeBaseExpanded}
+                      >
+                        {knowledgeBaseExpanded ? <ChevronDown size={16} className="mt-0.5 shrink-0 text-moss" /> : <ChevronRight size={16} className="mt-0.5 shrink-0 text-muted" />}
+                        <span className="min-w-0">
+                          <span className="block truncate text-sm font-bold text-ink">{knowledgeBase.name}</span>
+                          <span className="mt-1 block truncate text-xs text-muted">{knowledgeBase.description || "未填写描述"}</span>
+                        </span>
+                      </button>
+                    </div>
+                    <div className="pl-6 text-xs text-muted sm:pl-0">
+                      <span className="mr-1.5 sm:hidden">kb_id:</span>
+                      <code className="break-all font-mono text-[11px] text-ink/75">{knowledgeBase.kb_id}</code>
+                    </div>
+                    <div className="flex items-center gap-2 pl-6 text-xs text-muted sm:pl-0">
+                      <FileText size={14} className="text-moss" />
+                      {knowledgeBase.documents.length} 个成功文档
+                    </div>
+                    <div className="flex flex-wrap items-center justify-start gap-1 pl-6 sm:justify-end sm:pl-0">
+                      <button
+                        type="button"
+                        title="复制 kb_id"
+                        aria-label={`复制 ${knowledgeBase.name} 的 kb_id`}
+                        className="inline-flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-xs font-semibold text-muted transition-colors hover:bg-ink/5 hover:text-ink"
+                        onClick={() => void copyKnowledgeBaseId(knowledgeBase.kb_id)}
+                      >
+                        <Clipboard size={14} />
+                        <span className="hidden lg:inline">复制 ID</span>
+                      </button>
+                      <Link
+                        to={`/?kb_id=${encodeURIComponent(knowledgeBase.kb_id)}`}
+                        className={getActionLinkClass()}
+                      >
+                        <Upload size={14} />
+                        去上传
+                      </Link>
+                      <Link
+                        to={`/retrieve?kb_id=${encodeURIComponent(knowledgeBase.kb_id)}`}
+                        className={cn(getActionLinkClass(), "bg-moss/5 text-moss hover:bg-moss/10")}
+                      >
+                        <FileSearch size={14} />
+                        去检索
+                      </Link>
+                    </div>
                   </div>
 
-                  {tenantExpanded && (
-                    <div className="divide-y divide-line/80">
-                      {tenant.knowledge_bases.map((knowledgeBase) => {
-                        const kbKey = getKnowledgeBaseKey(tenant.tenant_id, knowledgeBase.kb_id);
-                        const knowledgeBaseExpanded = !collapsed.has(kbKey);
-                        return (
-                          <div role="rowgroup" key={knowledgeBase.kb_id} className="bg-white">
-                            <div role="row" className="grid gap-3 px-5 py-4 sm:grid-cols-[minmax(0,1.45fr)_minmax(180px,1fr)_minmax(110px,0.65fr)_minmax(220px,auto)] sm:items-center sm:gap-4 sm:px-6">
-                              <div className="min-w-0">
-                                <button
-                                  type="button"
-                                  className="flex min-w-0 items-start gap-2.5 text-left"
-                                  onClick={() => toggle(kbKey)}
-                                  aria-expanded={knowledgeBaseExpanded}
-                                >
-                                  {knowledgeBaseExpanded ? <ChevronDown size={16} className="mt-0.5 shrink-0 text-moss" /> : <ChevronRight size={16} className="mt-0.5 shrink-0 text-muted" />}
-                                  <span className="min-w-0">
-                                    <span className="block truncate text-sm font-bold text-ink">{knowledgeBase.name}</span>
-                                    <span className="mt-1 block truncate text-xs text-muted">{knowledgeBase.description || "未填写描述"}</span>
-                                  </span>
-                                </button>
-                              </div>
-                              <div className="pl-6 text-xs text-muted sm:pl-0">
-                                <span className="mr-1.5 sm:hidden">kb_id:</span>
-                                <code className="break-all font-mono text-[11px] text-ink/75">{knowledgeBase.kb_id}</code>
-                              </div>
-                              <div className="flex items-center gap-2 pl-6 text-xs text-muted sm:pl-0">
-                                <FileText size={14} className="text-moss" />
-                                {knowledgeBase.documents.length} 个成功文档
-                              </div>
-                              <div className="flex flex-wrap items-center justify-start gap-1 pl-6 sm:justify-end sm:pl-0">
-                                <button
-                                  type="button"
-                                  title="复制 kb_id"
-                                  aria-label={`复制 ${knowledgeBase.name} 的 kb_id`}
-                                  className="inline-flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-xs font-semibold text-muted transition-colors hover:bg-ink/5 hover:text-ink"
-                                  onClick={() => void copyKnowledgeBaseId(knowledgeBase.kb_id)}
-                                >
-                                  <Clipboard size={14} />
-                                  <span className="hidden lg:inline">复制 ID</span>
-                                </button>
-                                <Link
-                                  to={`/?tenant_id=${encodeURIComponent(tenant.tenant_id)}&kb_id=${encodeURIComponent(knowledgeBase.kb_id)}`}
-                                  className={getActionLinkClass()}
-                                >
-                                  <Upload size={14} />
-                                  去上传
-                                </Link>
-                                <Link
-                                  to={`/retrieve?tenant_id=${encodeURIComponent(tenant.tenant_id)}&kb_id=${encodeURIComponent(knowledgeBase.kb_id)}`}
-                                  className={cn(getActionLinkClass(), "bg-moss/5 text-moss hover:bg-moss/10")}
-                                >
-                                  <FileSearch size={14} />
-                                  去检索
-                                </Link>
-                              </div>
-                            </div>
-
-                            {knowledgeBaseExpanded && (
-                              <div className="pb-4 pl-5 pr-5 sm:pl-14 sm:pr-6">
-                                {knowledgeBase.documents.length === 0 ? (
-                                  <div className="rounded-xl border border-dashed border-line bg-paper/60 px-4 py-5 text-xs text-muted">
-                                    暂无已完成索引的文档
-                                  </div>
-                                ) : (
-                                  <div className="overflow-hidden rounded-xl border border-line">
-                                    <div className="hidden grid-cols-[minmax(0,1.6fr)_minmax(150px,1fr)_100px_130px] gap-3 bg-paper/70 px-4 py-2.5 text-[10px] font-bold uppercase tracking-[0.14em] text-muted sm:grid">
-                                      <span>文档</span>
-                                      <span>document_id</span>
-                                      <span>chunk</span>
-                                      <span className="text-right">创建时间</span>
-                                    </div>
-                                    <div className="divide-y divide-line">
-                                      {knowledgeBase.documents.map((document) => (
-                                        <div key={document.document_id} className="grid gap-2 px-4 py-3 sm:grid-cols-[minmax(0,1.6fr)_minmax(150px,1fr)_100px_130px] sm:items-center sm:gap-3">
-                                          <div className="flex min-w-0 items-center gap-2">
-                                            <FileText size={15} className="shrink-0 text-muted" />
-                                            <span className="truncate text-sm font-semibold text-ink" title={document.title}>{document.title}</span>
-                                          </div>
-                                          <code className="break-all pl-6 font-mono text-[11px] text-muted sm:pl-0">{document.document_id}</code>
-                                          <span className="pl-6 text-xs font-semibold text-ink/75 sm:pl-0">{document.chunk_count}</span>
-                                          <span className="pl-6 text-xs text-muted sm:pl-0 sm:text-right">{formatDate(document.created_at)}</span>
-                                        </div>
-                                      ))}
-                                    </div>
-                                  </div>
-                                )}
-                              </div>
-                            )}
+                  {knowledgeBaseExpanded && (
+                    <div className="pb-4 pl-5 pr-5 sm:pl-14 sm:pr-6">
+                      {knowledgeBase.documents.length === 0 ? (
+                        <div className="rounded-xl border border-dashed border-line bg-paper/60 px-4 py-5 text-xs text-muted">
+                          暂无已完成索引的文档
+                        </div>
+                      ) : (
+                        <div className="overflow-hidden rounded-xl border border-line">
+                          <div className="hidden grid-cols-[minmax(0,1.6fr)_minmax(150px,1fr)_100px_130px] gap-3 bg-paper/70 px-4 py-2.5 text-[10px] font-bold uppercase tracking-[0.14em] text-muted sm:grid">
+                            <span>文档</span>
+                            <span>document_id</span>
+                            <span>chunk</span>
+                            <span className="text-right">创建时间</span>
                           </div>
-                        );
-                      })}
+                          <div className="divide-y divide-line">
+                            {knowledgeBase.documents.map((document) => (
+                              <div key={document.document_id} className="grid gap-2 px-4 py-3 sm:grid-cols-[minmax(0,1.6fr)_minmax(150px,1fr)_100px_130px] sm:items-center sm:gap-3">
+                                <div className="flex min-w-0 items-center gap-2">
+                                  <FileText size={15} className="shrink-0 text-muted" />
+                                  <span className="truncate text-sm font-semibold text-ink" title={document.title}>{document.title}</span>
+                                </div>
+                                <code className="break-all pl-6 font-mono text-[11px] text-muted sm:pl-0">{document.document_id}</code>
+                                <span className="pl-6 text-xs font-semibold text-ink/75 sm:pl-0">{document.chunk_count}</span>
+                                <span className="pl-6 text-xs text-muted sm:pl-0 sm:text-right">{formatDate(document.created_at)}</span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
@@ -320,10 +302,10 @@ function TreeState({
   description,
   action,
 }: {
-  icon: React.ReactNode;
+  icon: ReactNode;
   title: string;
   description: string;
-  action?: React.ReactNode;
+  action?: ReactNode;
 }) {
   return (
     <div className="grid min-h-[300px] place-items-center px-6 py-14 text-center">
