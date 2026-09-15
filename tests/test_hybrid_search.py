@@ -207,6 +207,7 @@ async def test_rag_service_runs_vector_and_bm25_in_hybrid_mode() -> None:
         "bm25_count": 2,
         "fused_count": 3,
     }
+    assert isinstance(response.metadata["latency_ms"], int)
 
 
 @pytest.mark.asyncio

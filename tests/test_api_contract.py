@@ -23,6 +23,9 @@ class FakeKnowledgeBaseService:
             created_at=datetime(2026, 1, 1, tzinfo=UTC),
         )
 
+    async def list_tree(self, *, keyword=None):
+        return []
+
 
 class FakeDocumentService:
     async def upload(self, _request) -> DocumentUploadResponse:
@@ -62,10 +65,11 @@ def override_services():
 
 
 @pytest.mark.asyncio
-async def test_only_three_business_routes_are_exposed() -> None:
+async def test_business_routes_are_exposed() -> None:
     assert sorted(app.openapi()["paths"]) == [
         "/api/v1/documents/upload",
         "/api/v1/knowledge-bases/create",
+        "/api/v1/knowledge-bases/tree",
         "/api/v1/rag/retrieve",
     ]
 
@@ -96,11 +100,17 @@ async def test_business_routes_use_uniform_success_response() -> None:
                 "query": "question",
             },
         )
+        tree_response = await client.get(
+            "/api/v1/knowledge-bases/tree",
+            params={"keyword": "tech"},
+        )
 
     assert create_response.status_code == 200
     assert upload_response.status_code == 200
     assert retrieve_response.status_code == 200
+    assert tree_response.status_code == 200
     assert create_response.json()["code"] == 0
     assert upload_response.json()["code"] == 0
     assert retrieve_response.json()["code"] == 0
+    assert tree_response.json() == {"code": 0, "msg": "success", "data": []}
     assert retrieve_response.json()["data"]["retrieved_chunks"][0]["score"] == 0.9

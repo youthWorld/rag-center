@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -22,3 +23,24 @@ class KnowledgeBaseResponse(BaseModel):
     name: str
     tenant_id: str
     created_at: datetime
+
+
+class KnowledgeBaseTreeDocumentResponse(BaseModel):
+    document_id: str
+    title: str
+    status: Literal["SUCCESS"] = "SUCCESS"
+    chunk_count: int = Field(ge=0)
+    created_at: datetime
+
+
+class KnowledgeBaseTreeResponse(BaseModel):
+    kb_id: str
+    name: str
+    description: str | None = None
+    created_at: datetime
+    documents: list[KnowledgeBaseTreeDocumentResponse] = Field(default_factory=list)
+
+
+class KnowledgeBaseTenantTreeResponse(BaseModel):
+    tenant_id: str
+    knowledge_bases: list[KnowledgeBaseTreeResponse] = Field(default_factory=list)

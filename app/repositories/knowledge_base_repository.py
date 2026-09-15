@@ -1,6 +1,8 @@
-from sqlalchemy import select
+from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.chunk import Chunk
+from app.models.document import Document, DocumentStatus
 from app.models.knowledge_base import KnowledgeBase
 from app.utils.id_generator import generate_id
 
@@ -27,3 +29,36 @@ class KnowledgeBaseRepository:
         )
         result = await self.session.execute(statement)
         return result.scalar_one_or_none()
+
+    async def list_tree(
+        self, *, keyword: str | None = None
+    ) -> list[tuple[KnowledgeBase, Document | None, int]]:
+        statement = (
+            select(KnowledgeBase, Document, func.count(Chunk.id).label("chunk_count"))
+            .outerjoin(
+                Document,
+                and_(
+                    Document.kb_id == KnowledgeBase.id,
+                    Document.tenant_id == KnowledgeBase.tenant_id,
+                    Document.status == int(DocumentStatus.SUCCESS),
+                ),
+            )
+            .outerjoin(Chunk, Chunk.document_id == Document.id)
+            .group_by(KnowledgeBase.id, Document.id)
+            .order_by(
+                KnowledgeBase.tenant_id.asc(),
+                KnowledgeBase.created_at.desc(),
+                KnowledgeBase.id.asc(),
+                Document.created_at.desc(),
+                Document.id.asc(),
+            )
+        )
+        normalized_keyword = keyword.strip() if keyword else ""
+        if normalized_keyword:
+            statement = statement.where(KnowledgeBase.tenant_id.ilike(f"%{normalized_keyword}%"))
+
+        result = await self.session.execute(statement)
+        return [
+            (knowledge_base, document, int(chunk_count))
+            for knowledge_base, document, chunk_count in result.all()
+        ]

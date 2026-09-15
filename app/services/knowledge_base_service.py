@@ -2,7 +2,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.logging import get_logger
 from app.repositories.knowledge_base_repository import KnowledgeBaseRepository
-from app.schemas.knowledge_base import KnowledgeBaseCreateRequest, KnowledgeBaseResponse
+from app.schemas.knowledge_base import (
+    KnowledgeBaseCreateRequest,
+    KnowledgeBaseResponse,
+    KnowledgeBaseTenantTreeResponse,
+    KnowledgeBaseTreeDocumentResponse,
+    KnowledgeBaseTreeResponse,
+)
 
 
 class KnowledgeBaseService:
@@ -30,3 +36,43 @@ class KnowledgeBaseService:
             tenant_id=knowledge_base.tenant_id,
             created_at=knowledge_base.created_at,
         )
+
+    async def list_tree(
+        self, *, keyword: str | None = None
+    ) -> list[KnowledgeBaseTenantTreeResponse]:
+        rows = await self.repository.list_tree(keyword=keyword)
+        tenants: dict[str, KnowledgeBaseTenantTreeResponse] = {}
+        knowledge_bases: dict[tuple[str, str], KnowledgeBaseTreeResponse] = {}
+
+        for knowledge_base, document, chunk_count in rows:
+            tenant = tenants.setdefault(
+                knowledge_base.tenant_id,
+                KnowledgeBaseTenantTreeResponse(
+                    tenant_id=knowledge_base.tenant_id,
+                    knowledge_bases=[],
+                ),
+            )
+            knowledge_base_key = (knowledge_base.tenant_id, knowledge_base.id)
+            tree_knowledge_base = knowledge_bases.get(knowledge_base_key)
+            if tree_knowledge_base is None:
+                tree_knowledge_base = KnowledgeBaseTreeResponse(
+                    kb_id=knowledge_base.id,
+                    name=knowledge_base.name,
+                    description=knowledge_base.description,
+                    created_at=knowledge_base.created_at,
+                    documents=[],
+                )
+                knowledge_bases[knowledge_base_key] = tree_knowledge_base
+                tenant.knowledge_bases.append(tree_knowledge_base)
+
+            if document is not None:
+                tree_knowledge_base.documents.append(
+                    KnowledgeBaseTreeDocumentResponse(
+                        document_id=document.id,
+                        title=document.title,
+                        chunk_count=chunk_count,
+                        created_at=document.created_at,
+                    )
+                )
+
+        return list(tenants.values())

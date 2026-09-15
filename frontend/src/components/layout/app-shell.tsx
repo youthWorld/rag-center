@@ -9,6 +9,7 @@ import {
 } from "lucide-react";
 import { NavLink, Outlet } from "react-router-dom";
 import { cn } from "../../lib/utils";
+import { AppHeader } from "./app-header";
 
 const navItems = [
   { label: "知识库工作台", icon: LayoutGrid, to: "/" },
@@ -89,23 +90,7 @@ export function AppShell() {
       </aside>
 
       <div className="md:pl-[248px]">
-        <header className="sticky top-0 z-10 flex h-[76px] items-center justify-between border-b border-line bg-paper/90 px-5 backdrop-blur md:px-10">
-          <div className="flex items-center gap-3 md:hidden">
-            <div className="grid h-8 w-8 place-items-center rounded-lg bg-ink text-white">
-              <Sparkles size={15} />
-            </div>
-            <span className="text-sm font-bold">RAG Center</span>
-          </div>
-          <div className="hidden items-center gap-2 text-xs font-medium text-muted md:flex">
-            <span>RAG Center</span>
-            <span className="text-muted/50">/</span>
-            <span className="text-ink">知识库工作台</span>
-          </div>
-          <div className="flex items-center gap-2.5 text-xs font-semibold text-muted">
-            <span className="h-2 w-2 rounded-full bg-moss shadow-[0_0_0_4px_rgba(30,114,92,0.10)]" />
-            API proxy ready
-          </div>
-        </header>
+        <AppHeader />
         <main className="mx-auto max-w-[1440px] px-5 py-8 md:px-10 md:py-10">
           <Outlet />
         </main>

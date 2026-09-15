@@ -279,6 +279,7 @@ class RagService:
             retrieved_chunks=retrieved_chunks,
             metadata={
                 "top_k": top_k,
+                "latency_ms": latency_ms,
                 "vector_store": self.settings.vector_store,
                 "retrieval": self._build_retrieval_metadata(
                     mode=mode,

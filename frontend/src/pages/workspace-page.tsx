@@ -17,6 +17,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useForm } from "react-hook-form";
 import { z } from "zod";
 import { zodResolver } from "@hookform/resolvers/zod";
+import { useSearchParams } from "react-router-dom";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
@@ -25,7 +26,7 @@ import { Textarea } from "../components/ui/textarea";
 import { getApiErrorMessage } from "../lib/api";
 import { formatBytes, formatDate, createId } from "../lib/utils";
 import { useCreateKnowledgeBase } from "../hooks/use-knowledge-base";
-import { uploadDocument } from "../services/knowledge-base";
+import { fetchKnowledgeBaseTree, uploadDocument } from "../services/knowledge-base";
 import type { KnowledgeBase, UploadItem, UploadState } from "../types";
 
 const LAST_KB_KEY = "rag-center:last-knowledge-base";
@@ -81,7 +82,15 @@ function StatusIcon({ state }: { state: UploadState }) {
 }
 
 export function WorkspacePage() {
-  const [knowledgeBase, setKnowledgeBase] = useState<KnowledgeBase | null>(getStoredKnowledgeBase);
+  const [searchParams] = useSearchParams();
+  const tenantIdFromQuery = searchParams.get("tenant_id")?.trim() ?? "";
+  const kbIdFromQuery = searchParams.get("kb_id")?.trim() ?? "";
+  const [knowledgeBase, setKnowledgeBase] = useState<KnowledgeBase | null>(() =>
+    tenantIdFromQuery && kbIdFromQuery ? null : getStoredKnowledgeBase(),
+  );
+  const [isResolvingKnowledgeBase, setIsResolvingKnowledgeBase] = useState(
+    Boolean(tenantIdFromQuery && kbIdFromQuery),
+  );
   const [isCreateOpen, setIsCreateOpen] = useState(false);
   const [uploadItems, setUploadItems] = useState<UploadItem[]>([]);
   const [isDragging, setIsDragging] = useState(false);
@@ -89,6 +98,47 @@ export function WorkspacePage() {
   const [toast, setToast] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const folderInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (!tenantIdFromQuery || !kbIdFromQuery) {
+      setIsResolvingKnowledgeBase(false);
+      return;
+    }
+
+    let cancelled = false;
+    setIsResolvingKnowledgeBase(true);
+    fetchKnowledgeBaseTree(tenantIdFromQuery)
+      .then((tree) => {
+        if (cancelled) return;
+        const selected = tree
+          .flatMap((tenant) => tenant.knowledge_bases)
+          .find((item) => item.kb_id === kbIdFromQuery);
+        if (!selected) {
+          setKnowledgeBase(null);
+          setToast("没有找到 URL 中指定的知识库");
+          return;
+        }
+        setKnowledgeBase({
+          kb_id: selected.kb_id,
+          name: selected.name,
+          tenant_id: tenantIdFromQuery,
+          created_at: selected.created_at,
+        });
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setKnowledgeBase(null);
+          setToast(getApiErrorMessage(error));
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setIsResolvingKnowledgeBase(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [kbIdFromQuery, tenantIdFromQuery]);
 
   useEffect(() => {
     if (!toast) return;
@@ -206,7 +256,9 @@ export function WorkspacePage() {
         </Button>
       </section>
 
-      {!knowledgeBase ? (
+      {isResolvingKnowledgeBase ? (
+        <ResolvingKnowledgeBase />
+      ) : !knowledgeBase ? (
         <EmptyKnowledgeBase onCreate={() => setIsCreateOpen(true)} />
       ) : (
         <>
@@ -447,6 +499,7 @@ export function WorkspacePage() {
         onClose={() => setIsCreateOpen(false)}
         onCreated={handleCreated}
         onError={setToast}
+        initialTenantId={tenantIdFromQuery || "tenant_demo"}
       />
 
       {toast && (
@@ -484,6 +537,18 @@ function EmptyKnowledgeBase({ onCreate }: { onCreate: () => void }) {
   );
 }
 
+function ResolvingKnowledgeBase() {
+  return (
+    <section className="mt-8 grid min-h-[420px] place-items-center rounded-2xl border border-line bg-white px-6 py-16 shadow-soft">
+      <div className="text-center">
+        <LoaderCircle size={28} className="mx-auto animate-spin text-moss" />
+        <h2 className="mt-5 text-lg font-bold">正在打开知识库</h2>
+        <p className="mt-2 text-sm text-muted">正在从后端读取知识库信息。</p>
+      </div>
+    </section>
+  );
+}
+
 function Stat({ label, value, tone = "default" }: { label: string; value: number; tone?: "default" | "success" | "danger" }) {
   const toneClass = tone === "success" ? "text-emerald-600" : tone === "danger" ? "text-danger" : "text-ink";
   return (
@@ -499,11 +564,13 @@ function CreateKnowledgeBaseDialog({
   onClose,
   onCreated,
   onError,
+  initialTenantId,
 }: {
   open: boolean;
   onClose: () => void;
   onCreated: (knowledgeBase: KnowledgeBase) => void;
   onError: (message: string) => void;
+  initialTenantId: string;
 }) {
   const mutation = useCreateKnowledgeBase();
   const {
@@ -514,15 +581,15 @@ function CreateKnowledgeBaseDialog({
   } = useForm<KnowledgeBaseForm>({
     resolver: zodResolver(knowledgeBaseSchema),
     defaultValues: {
-      tenantId: "tenant_demo",
+      tenantId: initialTenantId,
       name: "",
       description: "",
     },
   });
 
   useEffect(() => {
-    if (open) reset({ tenantId: "tenant_demo", name: "", description: "" });
-  }, [open, reset]);
+    if (open) reset({ tenantId: initialTenantId, name: "", description: "" });
+  }, [initialTenantId, open, reset]);
 
   useEffect(() => {
     if (!open) return;
