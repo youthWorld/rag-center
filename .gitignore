@@ -13,6 +13,11 @@ htmlcov/
 postgres-data/
 error.log
 
+# Local datasets and prompt drafts
+/data/
+/prompt/
+/AGENTS.md
+
 # Frontend dependencies and build output
 frontend/node_modules/
 frontend/dist/
