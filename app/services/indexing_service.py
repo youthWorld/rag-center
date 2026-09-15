@@ -1,6 +1,7 @@
 from app.core.logging import get_logger
 from app.models.document import Document
 from app.providers.embedding.base import EmbeddingProvider
+from app.providers.keyword_search.base import KeywordSearchProvider
 from app.providers.parsers.base import DocumentParser
 from app.providers.parsers.plain_text import PlainTextDocumentParser
 from app.providers.vectorstores.base import VectorStore
@@ -17,11 +18,13 @@ class IndexingService:
         splitter: TextSplitter,
         embedding_provider: EmbeddingProvider,
         vector_store: VectorStore,
+        keyword_search_provider: KeywordSearchProvider | None = None,
         document_parser: DocumentParser | None = None,
     ) -> None:
         self.splitter = splitter
         self.embedding_provider = embedding_provider
         self.vector_store = vector_store
+        self.keyword_search_provider = keyword_search_provider
         self.document_parser = document_parser or PlainTextDocumentParser()
         self.logger = get_logger(__name__)
 
@@ -57,6 +60,8 @@ class IndexingService:
             for index, (content, embedding) in enumerate(zip(contents, embeddings, strict=True))
         ]
         await self.vector_store.add_chunks(chunks)
+        if self.keyword_search_provider is not None:
+            await self.keyword_search_provider.add_chunks(chunks)
         self.logger.info(
             "BUSINESS_EVENT | event=document_chunks_persisted | document_id=%s | chunk_count=%s",
             document.id,

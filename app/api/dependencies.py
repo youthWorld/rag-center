@@ -5,6 +5,8 @@ from app.core.config import Settings, settings
 from app.core.exceptions import ServiceConfigurationError
 from app.db.session import get_db
 from app.providers.embedding.openai_compatible import OpenAICompatibleEmbeddingProvider
+from app.providers.keyword_search.base import KeywordSearchProvider
+from app.providers.keyword_search.elasticsearch import ElasticsearchKeywordSearchProvider
 from app.providers.llm.openai_compatible import OpenAICompatibleLLMProvider
 from app.providers.rerank.base import RerankProvider
 from app.providers.rerank.llm import LLMRerankProvider
@@ -47,6 +49,18 @@ def get_rerank_provider(app_settings: Settings) -> RerankProvider:
     )
 
 
+def get_keyword_search_provider(app_settings: Settings) -> KeywordSearchProvider:
+    if app_settings.keyword_search_provider == "elasticsearch":
+        return ElasticsearchKeywordSearchProvider(app_settings)
+    raise ServiceConfigurationError(
+        internal_message=(
+            "unsupported KEYWORD_SEARCH_PROVIDER: "
+            f"{app_settings.keyword_search_provider}"
+        ),
+        context={"provider": app_settings.keyword_search_provider},
+    )
+
+
 def get_knowledge_base_service(
     session: AsyncSession = Depends(get_db),
 ) -> KnowledgeBaseService:
@@ -69,6 +83,7 @@ def get_document_service(
         ),
         embedding_provider=embedding_provider,
         vector_store=vector_store,
+        keyword_search_provider=get_keyword_search_provider(app_settings),
     )
     return DocumentService(
         session=session,
@@ -89,5 +104,6 @@ def get_rag_service(
         retrieval_log_repository=RetrievalLogRepository(session),
         embedding_provider=OpenAICompatibleEmbeddingProvider(app_settings),
         vector_store=PgVectorStore(session),
+        keyword_search_provider_factory=lambda: get_keyword_search_provider(app_settings),
         rerank_provider=get_rerank_provider(app_settings),
     )
