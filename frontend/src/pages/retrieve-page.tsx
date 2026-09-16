@@ -93,6 +93,7 @@ export function RetrievePage() {
       payload.query_options = { enabled: true, strategy: "rewrite" };
     }
 
+    setResult(null);
     setIsRunning(true);
     try {
       setResult(await ragService.retrieve(payload));
@@ -261,11 +262,15 @@ export function RetrievePage() {
           <div className="flex items-center justify-between gap-3">
             <div>
               <h3 className="text-sm font-bold">召回结果</h3>
-              <p className="mt-1 text-xs text-muted">{result ? `返回 ${result.retrieved_chunks.length} 个 chunk` : "执行一次检索后显示结果"}</p>
+              <p className="mt-1 text-xs text-muted">
+                {isRunning ? "正在检索，请稍候" : result ? `返回 ${result.retrieved_chunks.length} 个 chunk` : "执行一次检索后显示结果"}
+              </p>
             </div>
             {result && <Badge className="border-moss/15 bg-moss/8 text-moss">{result.metadata.retrieval?.mode ?? "retrieval"}</Badge>}
           </div>
-          {result ? (
+          {isRunning ? (
+            <RetrievalLoadingState />
+          ) : result ? (
             <div className="mt-4 space-y-3">
               {result.retrieved_chunks.length === 0 ? (
                 <div className="rounded-xl border border-dashed border-line bg-paper/60 px-5 py-10 text-center text-sm text-muted">没有召回内容。</div>
@@ -285,7 +290,32 @@ export function RetrievePage() {
         </div>
       </section>
 
-      <RunSummary result={result} />
+      <RunSummary result={result} isRunning={isRunning} />
+    </div>
+  );
+}
+
+function RetrievalLoadingState() {
+  return (
+    <div
+      className="mt-4 overflow-hidden rounded-xl border border-moss/20 bg-moss/5 px-5 py-8"
+      role="status"
+      aria-live="polite"
+    >
+      <div className="flex items-center gap-3">
+        <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-white text-moss shadow-sm">
+          <LoaderCircle size={20} className="animate-spin" />
+        </span>
+        <div>
+          <p className="text-sm font-bold text-ink">正在检索</p>
+          <p className="mt-1 text-xs text-muted">正在召回候选片段并整理排序结果</p>
+        </div>
+      </div>
+      <div className="mt-5 space-y-2" aria-hidden="true">
+        <div className="h-2 w-11/12 animate-pulse rounded-full bg-moss/15" />
+        <div className="h-2 w-4/5 animate-pulse rounded-full bg-moss/10" />
+        <div className="h-2 w-2/3 animate-pulse rounded-full bg-moss/10" />
+      </div>
     </div>
   );
 }
@@ -410,7 +440,7 @@ function MetricLabel({ label, help }: { label: string; help?: ReactNode }) {
   );
 }
 
-function RunSummary({ result }: { result: RagRetrieveResponse | null }) {
+function RunSummary({ result, isRunning }: { result: RagRetrieveResponse | null; isRunning: boolean }) {
   const queryProcessing = result?.metadata.query_processing;
 
   return (
@@ -424,23 +454,49 @@ function RunSummary({ result }: { result: RagRetrieveResponse | null }) {
           <p className="mt-1 text-xs text-muted">只读展示本次服务端返回的 metadata。</p>
         </div>
       </div>
-      {!result ? (
+      {isRunning ? (
+        <div className="px-5 py-8 sm:px-6" role="status" aria-live="polite">
+          <div className="flex items-center gap-2 text-sm font-semibold text-ink">
+            <LoaderCircle size={16} className="animate-spin text-moss" />
+            正在更新运行摘要
+          </div>
+          <p className="mt-2 text-xs text-muted">本次检索完成后显示召回数量、耗时和降级状态。</p>
+        </div>
+      ) : !result ? (
         <div className="px-5 py-8 text-sm text-muted sm:px-6">完成一次检索后，这里会显示服务端耗时、召回数量和降级状态。</div>
       ) : (
         <div className="space-y-4 px-5 py-5 sm:px-6">
-          <div className="flex flex-wrap items-center gap-x-3 gap-y-2 text-sm font-semibold text-ink">
-            <span>mode={result.metadata.retrieval?.mode ?? "—"}</span>
-            <span className="text-muted/50">|</span>
-            <span>top_k={result.metadata.top_k ?? "—"}</span>
-            <span className="text-muted/50">|</span>
-            <span>count={result.retrieved_chunks.length}</span>
-            <span className="text-muted/50">|</span>
-            <span className="inline-flex items-center gap-1.5"><Clock3 size={14} className="text-moss" />服务端耗时 {result.metadata.latency_ms ?? "—"}ms</span>
+          <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+            <SummaryOverview label="检索模式" code="mode" value={result.metadata.retrieval?.mode ?? "—"} />
+            <SummaryOverview label="结果上限" code="top_k" value={result.metadata.top_k ?? "—"} suffix="个" />
+            <SummaryOverview label="最终返回" code="count" value={result.retrieved_chunks.length} suffix="个" />
+            <SummaryOverview
+              label="服务端耗时"
+              code="latency"
+              value={result.metadata.latency_ms ?? "—"}
+              suffix="ms"
+              icon={<Clock3 size={14} className="text-moss" />}
+            />
           </div>
-          <div className="grid gap-3 rounded-xl border border-line bg-paper/60 p-4 text-xs sm:grid-cols-3">
-            <SummaryMetric label="vector" value={result.metadata.retrieval?.vector_count ?? "—"} />
-            <SummaryMetric label="bm25" value={result.metadata.retrieval?.bm25_count ?? "—"} />
-            <SummaryMetric label="fused" value={result.metadata.retrieval?.fused_count ?? "—"} />
+          <div className="grid overflow-hidden rounded-xl border border-line bg-paper/60 sm:grid-cols-3 sm:divide-x sm:divide-line">
+            <SummaryMetric
+              label="向量召回"
+              code="vector"
+              description="语义相似候选"
+              value={result.metadata.retrieval?.vector_count ?? "—"}
+            />
+            <SummaryMetric
+              label="关键词召回"
+              code="bm25"
+              description="关键词匹配候选"
+              value={result.metadata.retrieval?.bm25_count ?? "—"}
+            />
+            <SummaryMetric
+              label="融合结果"
+              code="fused"
+              description="合并后的候选"
+              value={result.metadata.retrieval?.fused_count ?? "—"}
+            />
           </div>
           {queryProcessing && <QueryProcessingSummary processing={queryProcessing} />}
           <div className="flex flex-wrap items-center gap-2 text-xs text-muted">
@@ -523,11 +579,57 @@ function QueryTextRow({
   );
 }
 
-function SummaryMetric({ label, value }: { label: string; value: number | string }) {
+function SummaryOverview({
+  label,
+  code,
+  value,
+  suffix,
+  icon,
+}: {
+  label: string;
+  code: string;
+  value: number | string;
+  suffix?: string;
+  icon?: ReactNode;
+}) {
   return (
-    <div className="flex items-center justify-between gap-3">
-      <span className="font-mono text-muted">{label}</span>
-      <span className="font-bold text-ink">{value}</span>
+    <div className="rounded-xl border border-line bg-paper/60 px-3.5 py-3">
+      <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.12em] text-muted">
+        {icon}
+        <span>{code}</span>
+      </div>
+      <div className="mt-1.5 flex items-baseline justify-between gap-3">
+        <span className="text-xs font-semibold text-ink">{label}</span>
+        <span className="font-mono text-sm font-bold text-ink">
+          {value}
+          {suffix && <span className="ml-1 text-[11px] font-semibold text-muted">{suffix}</span>}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+function SummaryMetric({
+  label,
+  code,
+  description,
+  value,
+}: {
+  label: string;
+  code: string;
+  description: string;
+  value: number | string;
+}) {
+  return (
+    <div className="flex items-center gap-3 px-4 py-3.5">
+      <div className="min-w-0">
+        <div className="flex items-baseline gap-2">
+          <span className="text-sm font-bold text-ink">{label}</span>
+          <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.1em] text-muted">{code}</span>
+        </div>
+        <p className="mt-1 text-xs text-muted">{description}</p>
+      </div>
+      <span className="shrink-0 font-mono text-xl font-bold text-ink">{value}</span>
     </div>
   );
 }
