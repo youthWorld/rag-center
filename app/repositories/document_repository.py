@@ -60,6 +60,14 @@ class DocumentRepository:
         result = await self.session.execute(statement)
         return int(result.scalar_one())
 
+    async def count_by_tenant_and_status(self, *, tenant_id: str, status: int) -> int:
+        statement = select(func.count(Document.id)).where(
+            Document.tenant_id == tenant_id,
+            Document.status == status,
+        )
+        result = await self.session.execute(statement)
+        return int(result.scalar_one())
+
     async def delete_by_id(self, *, document_id: str, tenant_id: str | None = None) -> None:
         statement = delete(Document).where(Document.id == document_id)
         if tenant_id is not None:

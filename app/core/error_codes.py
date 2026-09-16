@@ -18,8 +18,10 @@ class ErrorCode(Enum):
     # HTTP and upstream API errors.
     API_REQUEST_ERROR = (20001, "request failed")
     API_TIMEOUT = (20002, "request timed out")
-    API_RATE_LIMIT = (20003, "request rate limit exceeded")
+    API_RATE_LIMIT = (20005, "request rate limit exceeded")
     REQUEST_VALIDATION_ERROR = (20004, "request validation failed")
+    FEATURE_NOT_ALLOWED = (20013, "feature is not allowed for this plan")
+    QUOTA_EXCEEDED = (20014, "quota exceeded")
 
     # Database and storage errors.
     DB_ERROR = (30001, "database operation failed")

@@ -1,8 +1,18 @@
+import asyncio
+import sys
 from collections.abc import AsyncIterator
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.core.config import settings
+
+
+def _configure_asyncio_policy() -> None:
+    if sys.platform == "win32":
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
+
+_configure_asyncio_policy()
 
 engine = create_async_engine(
     settings.database_url,

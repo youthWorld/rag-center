@@ -60,3 +60,12 @@ export function getApiErrorMessage(error: unknown) {
   if (error instanceof Error) return error.message;
   return "操作失败，请稍后重试。";
 }
+
+export function getApiErrorCode(error: unknown): number | null {
+  if (error instanceof ApiResponseError) return error.code;
+  if (axios.isAxiosError(error)) {
+    const data = error.response?.data as { code?: unknown } | undefined;
+    return typeof data?.code === "number" ? data.code : null;
+  }
+  return null;
+}

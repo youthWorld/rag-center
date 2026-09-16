@@ -185,6 +185,21 @@ async def test_auth_me_returns_tenant_context_for_valid_key(monkeypatch) -> None
             "tenant_name": "Test tenant",
             "key_prefix": "rk_a1b2",
             "key_name": "test key",
+            "plan": "free",
+            "features": {
+                "allowed_profiles": ["speed"],
+                "hybrid_allowed": False,
+                "rerank_allowed": False,
+                "query_rewrite_allowed": False,
+            },
+            "limits": {
+                "retrieve_qps": 3,
+                "retrieve_daily": 500,
+                "max_kb": 1,
+                "max_documents_per_kb": 30,
+                "max_processing_documents": 1,
+            },
+            "usage": {"kb_count": 0, "retrieve_daily_count": 0},
         },
     }
 
@@ -206,6 +221,21 @@ async def test_auth_me_uses_default_tenant_when_auth_is_disabled() -> None:
         "tenant_name": DEFAULT_TENANT_ID,
         "key_prefix": None,
         "key_name": None,
+        "plan": "pro",
+        "features": {
+            "allowed_profiles": ["speed", "balanced", "quality", "custom"],
+            "hybrid_allowed": True,
+            "rerank_allowed": True,
+            "query_rewrite_allowed": True,
+        },
+        "limits": {
+            "retrieve_qps": 50,
+            "retrieve_daily": 100000,
+            "max_kb": 50,
+            "max_documents_per_kb": 5000,
+            "max_processing_documents": 10,
+        },
+        "usage": {"kb_count": 0, "retrieve_daily_count": 0},
     }
 
 

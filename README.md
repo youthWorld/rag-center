@@ -101,19 +101,23 @@ curl.exe -s -X POST "http://127.0.0.1:8000/api/v1/documents/<document_id>/reinde
 {
   "kb_id": "<knowledge-base-id>",
   "user_id": "user_demo",
-  "query": "退款需要几天内申请？"
+  "query": "退款需要几天内申请？",
+  "profile": "balanced"
 }
 ```
 
 接口只返回结构化召回 chunk、引用来源、分数和检索元数据，不生成最终答案。业务方可以使用这些上下文调用自己的大模型或编排服务。
 
-默认使用 `RETRIEVAL_MODE=vector` 保持纯向量检索。也可以通过请求体覆盖为混合召回：
+`profile` 未传时默认使用 `balanced`。`speed` 使用向量召回，`balanced` 使用混合召回，`quality` 在混合召回基础上启用重排和 query 改写，`custom` 保留请求中的 `retrieval_options`、`rerank_options` 和 `query_options`。可用 profile 和能力上限由租户套餐决定。
+
+使用 `custom` profile 时，可以通过请求体覆盖检索参数：
 
 ```json
 {
   "kb_id": "<knowledge-base-id>",
   "user_id": "user_demo",
   "query": "退款需要几天内申请？",
+  "profile": "custom",
   "top_k": 20,
   "retrieval_options": {
     "mode": "hybrid",
@@ -188,11 +192,11 @@ uv run python scripts/update_kb_settings.py `
 
 以下三种操作都用于异步索引运维，但处理层级不同：
 
-| 操作 | 适用场景 | 是否清理该文档旧检索数据 | 任务消息 |
-| --- | --- | --- | --- |
-| `POST /documents/{document_id}/reindex` | 文档状态为 FAILED | 是 | 新建任务 |
-| `restore_celery_task.py restore` | 原消息仍在 Redis 未确认列表 | 否 | 恢复原消息 |
-| `index_document_task.delay(...)` | 文档为 PROCESSING 且原消息已丢失 | 否 | 新建任务 |
+| 操作                                      | 适用场景                         | 是否清理该文档旧检索数据 | 任务消息   |
+| ----------------------------------------- | -------------------------------- | ------------------------ | ---------- |
+| `POST /documents/{document_id}/reindex` | 文档状态为 FAILED                | 是                       | 新建任务   |
+| `restore_celery_task.py restore`        | 原消息仍在 Redis 未确认列表      | 否                       | 恢复原消息 |
+| `index_document_task.delay(...)`        | 文档为 PROCESSING 且原消息已丢失 | 否                       | 新建任务   |
 
 #### 通过 reindex 接口重试失败文档
 
@@ -257,7 +261,15 @@ uv run python scripts/create_tenant.py --id tenant_demo --name "演示租户"
 uv run python scripts/create_api_key.py --tenant-id tenant_demo --name "本地开发"
 ```
 
+新建租户默认使用 `free` 套餐。可以通过运维脚本切换套餐：
+
+```powershell
+uv run python scripts/update_tenant_plan.py --tenant-id tenant_demo --plan pro
+```
+
 API Key 只在创建命令中明文输出一次，数据库只保存 SHA-256 hash。`GET /api/v1/auth/me` 可用于验证当前 Key 和租户信息。设置 `AUTH_ENABLED=false` 时跳过 Key 校验并固定使用 `tenant_demo`，便于本地调试。
+
+新租户的完整开通、套餐限制、profile 用法和常见错误码见 [租户接入与套餐使用](docs/tenant-onboarding.md)。
 
 ## 本地启动
 
@@ -286,9 +298,8 @@ API Key 只在创建命令中明文输出一次，数据库只保存 SHA-256 has
 7. 启动 API：
 
    ```powershell
-   uv run uvicorn app.main:app --reload
+   uv run uvicorn app.main:app --reload --loop app.core.event_loop:selector_event_loop_factory
    ```
-
 8. 启动 Celery Worker：
 
    ```powershell
@@ -296,6 +307,22 @@ API Key 只在创建命令中明文输出一次，数据库只保存 SHA-256 has
    ```
 
 当前开发模式下，Python、uv 和 FastAPI 都由本机环境管理；Docker 运行 PostgreSQL + pgvector、Elasticsearch 和 Redis。Elasticsearch 索引 mapping 使用 `analysis-ik` 提供的 `ik_max_word` 与 `ik_smart` 分词器。
+
+### Windows 下 psycopg 事件循环兼容
+
+Windows 使用 psycopg 异步连接时，Uvicorn 默认的单进程启动方式会创建 `ProactorEventLoop`，访问需要 PostgreSQL 的接口时可能出现：
+
+```text
+Psycopg cannot use the 'ProactorEventLoop' to run in async mode
+```
+
+开发环境推荐使用上面的 `--reload --loop app.core.event_loop:selector_event_loop_factory` 启动命令。若不使用 `--reload`，则必须显式指定：
+
+```powershell
+uv run uvicorn app.main:app --loop app.core.event_loop:selector_event_loop_factory
+```
+
+提交代码后如果没有重启后端，已运行的进程不会加载新的代码或事件循环配置；`--reload` 模式则会由重载子进程使用兼容的 Selector loop。
 
 ## 测试和代码检查
 

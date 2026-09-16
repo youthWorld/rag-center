@@ -19,6 +19,7 @@ from app.schemas.knowledge_base import (
     KnowledgeBaseUpdateRequest,
 )
 from app.services.indexing_service import IndexingService
+from app.tenant.plan_resolver import PlanResolver
 from app.utils.knowledge_base_settings import validate_knowledge_base_settings
 
 
@@ -29,16 +30,26 @@ class KnowledgeBaseService:
         repository: KnowledgeBaseRepository,
         document_repository: DocumentRepository | None = None,
         indexing_service: IndexingService | None = None,
+        plan_resolver: PlanResolver | None = None,
+        quota_service: Any | None = None,
     ) -> None:
         self.session = session
         self.repository = repository
         self.document_repository = document_repository
         self.indexing_service = indexing_service
+        self.plan_resolver = plan_resolver or PlanResolver()
+        self.quota_service = quota_service
         self.logger = get_logger(__name__)
 
     async def create(
         self, request: KnowledgeBaseCreateRequest, *, tenant_id: str
     ) -> KnowledgeBaseResponse:
+        if self.quota_service is not None:
+            plan = await self.plan_resolver.resolve_for_tenant_id(tenant_id)
+            await self.quota_service.check_create_knowledge_base(
+                tenant_id=tenant_id,
+                plan=plan,
+            )
         knowledge_base = await self.repository.create(
             tenant_id=tenant_id,
             name=request.name,

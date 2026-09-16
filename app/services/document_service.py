@@ -18,6 +18,7 @@ from app.schemas.document import (
 )
 from app.services.indexing_service import IndexingService
 from app.tasks.indexing import index_document_task
+from app.tenant.plan_resolver import PlanResolver
 
 
 class DocumentService:
@@ -27,11 +28,15 @@ class DocumentService:
         document_repository: DocumentRepository,
         knowledge_base_repository: KnowledgeBaseRepository,
         indexing_service: IndexingService,
+        plan_resolver: PlanResolver | None = None,
+        quota_service: object | None = None,
     ) -> None:
         self.session = session
         self.document_repository = document_repository
         self.knowledge_base_repository = knowledge_base_repository
         self.indexing_service = indexing_service
+        self.plan_resolver = plan_resolver or PlanResolver()
+        self.quota_service = quota_service
         self.logger = get_logger(__name__)
 
     async def upload(
@@ -43,6 +48,13 @@ class DocumentService:
             tenant_id,
             request.title,
         )
+        if self.quota_service is not None:
+            plan = await self.plan_resolver.resolve_for_tenant_id(tenant_id)
+            await self.quota_service.check_upload_document(
+                tenant_id=tenant_id,
+                kb_id=request.kb_id,
+                plan=plan,
+            )
         document = await self.indexing_service.create_document_record(
             tenant_id,
             request,
@@ -121,6 +133,12 @@ class DocumentService:
                 ErrorCode.PARAM_ERROR,
                 "only failed documents can be reindexed",
                 context={"document_id": document.id, "status": int(document.status)},
+            )
+        if self.quota_service is not None:
+            plan = await self.plan_resolver.resolve_for_tenant_id(tenant_id)
+            await self.quota_service.check_reindex_document(
+                tenant_id=tenant_id,
+                plan=plan,
             )
 
         try:

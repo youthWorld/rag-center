@@ -29,6 +29,7 @@ async def get_current_tenant(
             key_id=None,
             key_prefix=None,
             key_name=None,
+            plan="pro",
         )
 
     if credentials is None or credentials.scheme.lower() != "bearer":

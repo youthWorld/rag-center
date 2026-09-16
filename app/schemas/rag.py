@@ -6,6 +6,7 @@ from app.schemas.hybrid_search import RetrievalOptions, RetrievalSource
 from app.schemas.rerank import RerankOptions
 
 QueryRewriteStrategy = Literal["noop", "rewrite"]
+RetrieveProfile = Literal["speed", "balanced", "quality", "custom"]
 
 
 class QueryOptions(BaseModel):
@@ -17,6 +18,7 @@ class RagRetrieveRequest(BaseModel):
     kb_id: str = Field(min_length=1, max_length=36)
     user_id: str = Field(min_length=1, max_length=128)
     query: str = Field(min_length=1)
+    profile: RetrieveProfile | None = None
     top_k: int | None = Field(default=None, ge=1)
     retrieval_options: RetrievalOptions | None = None
     rerank_options: RerankOptions | None = None

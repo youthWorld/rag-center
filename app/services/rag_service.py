@@ -5,7 +5,12 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
-from app.core.exceptions import KnowledgeBaseNotFoundError, ServiceConfigurationError
+from app.core.error_codes import ErrorCode
+from app.core.exceptions import (
+    KnowledgeBaseNotFoundError,
+    ServiceConfigurationError,
+    raise_app_error,
+)
 from app.core.logging import get_logger
 from app.providers.embedding.base import EmbeddingProvider
 from app.providers.keyword_search.base import KeywordSearchProvider
@@ -15,9 +20,12 @@ from app.providers.rerank.noop import NoopRerankProvider
 from app.providers.vectorstores.base import VectorStore
 from app.repositories.knowledge_base_repository import KnowledgeBaseRepository
 from app.repositories.retrieval_log_repository import RetrievalLogRepository
-from app.schemas.hybrid_search import RetrievalMode
-from app.schemas.rag import RagRetrieveRequest, RagRetrieveResponse, RetrievedChunk
+from app.schemas.hybrid_search import RetrievalMode, RetrievalOptions
+from app.schemas.rag import QueryOptions, RagRetrieveRequest, RagRetrieveResponse, RetrievedChunk
 from app.services.hybrid_search_service import HybridSearchService
+from app.services.rate_limit_service import RateLimitService
+from app.tenant.plan_resolver import PlanContext, PlanResolver
+from app.tenant.retrieve_presets import expand_retrieve_profile
 
 
 class RagService:
@@ -34,6 +42,8 @@ class RagService:
         hybrid_search_service: HybridSearchService | None = None,
         rerank_provider: RerankProvider | None = None,
         query_pipeline: QueryPipeline | None = None,
+        plan_resolver: PlanResolver | None = None,
+        rate_limit_service: RateLimitService | None = None,
     ) -> None:
         self.session = session
         self.settings = settings
@@ -50,10 +60,17 @@ class RagService:
         self.query_pipeline = query_pipeline or QueryPipeline(
             rewrite_enabled=settings.query_rewrite_enabled
         )
+        self.plan_resolver = plan_resolver
+        self.rate_limit_service = rate_limit_service
         self.logger = get_logger(__name__)
 
     async def retrieve(
-        self, request: RagRetrieveRequest, *, tenant_id: str
+        self,
+        request: RagRetrieveRequest,
+        *,
+        tenant_id: str,
+        tenant: Any | None = None,
+        plan_context: PlanContext | None = None,
     ) -> RagRetrieveResponse:
         self.logger.info(
             "BUSINESS_EVENT | event=rag_retrieval_started | kb_id=%s | tenant_id=%s | user_id=%s",
@@ -61,6 +78,34 @@ class RagService:
             tenant_id,
             request.user_id,
         )
+        plan = plan_context or await self._resolve_plan_context(tenant_id, tenant=tenant)
+        profile = request.profile
+        if profile is None:
+            profile = (
+                "balanced"
+                if plan_context is not None or tenant is not None or self._policy_is_configured()
+                else "custom"
+            )
+        if profile not in plan.features.allowed_profiles:
+            self._raise_feature_not_allowed(
+                plan,
+                profile=profile,
+                feature="retrieve profile",
+            )
+        effective_request = self._expand_profile(request, profile)
+        mode = self._resolve_retrieval_mode(effective_request)
+        rerank_enabled = self._resolve_rerank_enabled(effective_request)
+        query_rewrite_enabled = self._resolve_query_rewrite_enabled(effective_request)
+        self._enforce_plan_features(
+            plan,
+            profile=profile,
+            mode=mode,
+            rerank_enabled=rerank_enabled,
+            query_rewrite_enabled=query_rewrite_enabled,
+        )
+        if self.rate_limit_service is not None:
+            await self.rate_limit_service.check_retrieve(tenant_id, plan)
+
         knowledge_base = await self.knowledge_base_repository.get_by_id(
             kb_id=request.kb_id,
             tenant_id=tenant_id,
@@ -71,13 +116,12 @@ class RagService:
         query_processing = await self.query_pipeline.process(
             request.query,
             knowledge_base=knowledge_base,
-            query_options=request.query_options,
+            query_options=effective_request.query_options,
         )
         search_query = query_processing.search_query
         started_at = time.perf_counter()
-        mode = self._resolve_retrieval_mode(request)
         vector_top_k, bm25_top_k, top_k, rrf_k = self._resolve_retrieval_options(
-            request,
+            effective_request,
             mode,
         )
         if mode == "hybrid":
@@ -203,8 +247,7 @@ class RagService:
 
         retrieved = retrieved[:top_k]
 
-        rerank_enabled = self._resolve_rerank_enabled(request)
-        rerank_top_n = self._resolve_rerank_top_n(request)
+        rerank_top_n = self._resolve_rerank_top_n(effective_request)
         candidate_count = 0
         rerank_degraded = False
         rerank_error: str | None = None
@@ -214,7 +257,7 @@ class RagService:
             candidate_count = len(rerank_candidates)
             try:
                 reranked = await self.rerank_provider.rerank(
-                    query=request.query,
+                    query=effective_request.query,
                     chunks=rerank_candidates,
                     top_n=rerank_top_n,
                 )
@@ -268,6 +311,8 @@ class RagService:
             latency_ms=latency_ms,
         )
         await self.session.commit()
+        if self.rate_limit_service is not None:
+            await self.rate_limit_service.record_retrieve_success(tenant_id)
         self.logger.info(
             "BUSINESS_EVENT | event=rag_retrieval_completed | tenant_id=%s | "
             "kb_id=%s | query=%s | vector_top_k=%s | bm25_top_k=%s | "
@@ -317,7 +362,88 @@ class RagService:
                     degraded=rerank_degraded,
                     error=rerank_error,
                 ),
+                "tenant_policy": {
+                    "plan": plan.plan,
+                    "retrieve_profile": profile,
+                    "effective_mode": mode,
+                    "effective_rerank": rerank_enabled,
+                    "effective_query_rewrite": query_rewrite_enabled,
+                },
             },
+        )
+
+    async def _resolve_plan_context(
+        self,
+        tenant_id: str,
+        *,
+        tenant: Any | None = None,
+    ) -> PlanContext:
+        if tenant is not None and self.plan_resolver is not None:
+            resolve = getattr(self.plan_resolver, "resolve", None)
+            if resolve is not None:
+                return resolve(tenant)
+        if tenant is not None:
+            from app.tenant.plan_resolver import resolve_plan
+
+            return resolve_plan(tenant)
+        if self.plan_resolver is not None:
+            resolve_for_tenant_id = getattr(
+                self.plan_resolver,
+                "resolve_for_tenant_id",
+                None,
+            )
+            if resolve_for_tenant_id is not None:
+                return await resolve_for_tenant_id(tenant_id)
+        return await PlanResolver().resolve_for_tenant_id(tenant_id)
+
+    def _policy_is_configured(self) -> bool:
+        return self.plan_resolver is not None or self.rate_limit_service is not None
+
+    @staticmethod
+    def _expand_profile(
+        request: RagRetrieveRequest,
+        profile: str,
+    ) -> RagRetrieveRequest:
+        if profile == "custom":
+            return request
+        preset = expand_retrieve_profile(profile)
+        updates: dict[str, Any] = {}
+        if "top_k" in preset:
+            updates["top_k"] = preset["top_k"]
+        if "retrieval_options" in preset:
+            updates["retrieval_options"] = RetrievalOptions.model_validate(
+                preset["retrieval_options"]
+            )
+        if "rerank_options" in preset:
+            from app.schemas.rerank import RerankOptions
+
+            updates["rerank_options"] = RerankOptions.model_validate(preset["rerank_options"])
+        if "query_options" in preset:
+            updates["query_options"] = QueryOptions.model_validate(preset["query_options"])
+        return request.model_copy(update=updates)
+
+    def _enforce_plan_features(
+        self,
+        plan: PlanContext,
+        *,
+        profile: str,
+        mode: RetrievalMode,
+        rerank_enabled: bool,
+        query_rewrite_enabled: bool,
+    ) -> None:
+        if mode == "hybrid" and not plan.features.hybrid_allowed:
+            self._raise_feature_not_allowed(plan, profile=profile, feature="hybrid retrieval")
+        if rerank_enabled and not plan.features.rerank_allowed:
+            self._raise_feature_not_allowed(plan, profile=profile, feature="rerank")
+        if query_rewrite_enabled and not plan.features.query_rewrite_allowed:
+            self._raise_feature_not_allowed(plan, profile=profile, feature="query rewrite")
+
+    @staticmethod
+    def _raise_feature_not_allowed(plan: PlanContext, *, profile: str, feature: str) -> None:
+        raise_app_error(
+            ErrorCode.FEATURE_NOT_ALLOWED,
+            f"{feature} is not allowed for the {plan.plan} plan",
+            data={"plan": plan.plan, "profile": profile, "feature": feature},
         )
 
     def _resolve_retrieval_mode(self, request: RagRetrieveRequest) -> RetrievalMode:
@@ -441,6 +567,18 @@ class RagService:
         if request.rerank_options is not None and request.rerank_options.enabled is not None:
             return request.rerank_options.enabled
         return self.settings.rerank_enabled
+
+    def _resolve_query_rewrite_enabled(self, request: RagRetrieveRequest) -> bool:
+        options = request.query_options
+        if options is None:
+            return self.settings.query_rewrite_enabled
+        if options.strategy == "noop":
+            return False
+        if options.enabled is not None:
+            return options.enabled
+        if options.strategy == "rewrite":
+            return True
+        return self.settings.query_rewrite_enabled
 
     def _resolve_rerank_top_n(self, request: RagRetrieveRequest) -> int:
         if request.rerank_options is not None and request.rerank_options.top_n is not None:

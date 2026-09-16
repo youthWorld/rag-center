@@ -12,8 +12,8 @@ class TenantRepository:
         result = await self.session.execute(select(Tenant).where(Tenant.id == tenant_id))
         return result.scalar_one_or_none()
 
-    async def create(self, *, tenant_id: str, name: str) -> Tenant:
-        tenant = Tenant(id=tenant_id, name=name)
+    async def create(self, *, tenant_id: str, name: str, plan: str = "free") -> Tenant:
+        tenant = Tenant(id=tenant_id, name=name, plan=plan)
         self.session.add(tenant)
         await self.session.flush()
         return tenant

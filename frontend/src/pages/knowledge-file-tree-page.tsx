@@ -25,6 +25,7 @@ import { HelpTooltip } from "../components/ui/help-tooltip";
 import { Input } from "../components/ui/input";
 import { getApiErrorMessage } from "../lib/api";
 import { cn, formatDate } from "../lib/utils";
+import { formatPlanQuota, tenantPlanMeta } from "../lib/tenant-plan";
 import { authService } from "../services/authService";
 import { documentService } from "../services/document";
 import { knowledgeBaseService } from "../services/knowledge-base";
@@ -162,6 +163,13 @@ export function KnowledgeFileTreePage() {
             {authQuery.data && (
               <>
                 <Badge className="border-moss/15 bg-moss/8 text-moss">租户：{authQuery.data.tenant_name}</Badge>
+                <Badge className={tenantPlanMeta[authQuery.data.plan].className}>
+                  <span className="h-1.5 w-1.5 rounded-full bg-current" />
+                  套餐：{tenantPlanMeta[authQuery.data.plan].label}
+                </Badge>
+                <Badge className="border-line bg-white text-muted">
+                  今日检索：{formatPlanQuota(authQuery.data.usage.retrieve_daily_count, authQuery.data.limits.retrieve_daily)}
+                </Badge>
                 <Badge className="border-line bg-white font-mono text-muted">ID：{authQuery.data.tenant_id}</Badge>
               </>
             )}

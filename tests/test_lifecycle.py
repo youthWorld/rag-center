@@ -4,6 +4,8 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
+import app.core.event_loop as event_loop_module
+import app.db.session as db_session_module
 import app.services.document_service as document_service_module
 import app.tasks.indexing as indexing_task_module
 from app.core.error_codes import ErrorCode
@@ -348,6 +350,36 @@ def test_worker_async_runner_uses_selector_event_loop_on_windows(monkeypatch) ->
     assert indexing_task_module._run_async(operation()) == "done"
     create_policy.assert_called_once_with()
     set_policy.assert_called_once_with(selector_policy)
+
+
+def test_database_session_configures_selector_event_loop_on_windows(monkeypatch) -> None:
+    selector_policy = object()
+    create_policy = Mock(return_value=selector_policy)
+    set_policy = Mock()
+    monkeypatch.setattr(db_session_module.sys, "platform", "win32")
+    monkeypatch.setattr(
+        db_session_module.asyncio,
+        "WindowsSelectorEventLoopPolicy",
+        create_policy,
+        raising=False,
+    )
+    monkeypatch.setattr(db_session_module.asyncio, "set_event_loop_policy", set_policy)
+
+    db_session_module._configure_asyncio_policy()
+
+    create_policy.assert_called_once_with()
+    set_policy.assert_called_once_with(selector_policy)
+
+
+def test_uvicorn_loop_factory_uses_selector_event_loop_on_windows(monkeypatch) -> None:
+    monkeypatch.setattr(event_loop_module.sys, "platform", "win32")
+
+    loop = event_loop_module.selector_event_loop_factory(use_subprocess=True)
+
+    try:
+        assert isinstance(loop, event_loop_module.asyncio.SelectorEventLoop)
+    finally:
+        loop.close()
 
 
 def test_celery_task_uses_requested_retry_policy() -> None:

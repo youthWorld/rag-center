@@ -23,7 +23,7 @@ import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { Progress } from "../components/ui/progress";
 import { Textarea } from "../components/ui/textarea";
-import { getApiErrorMessage } from "../lib/api";
+import { getApiErrorCode, getApiErrorMessage } from "../lib/api";
 import { formatBytes, formatDate, createId } from "../lib/utils";
 import { useCreateKnowledgeBase } from "../hooks/use-knowledge-base";
 import { fetchKnowledgeBaseTree, uploadDocument } from "../services/knowledge-base";
@@ -171,6 +171,7 @@ export function WorkspacePage() {
     if (!queue.length) return;
 
     setIsUploading(true);
+    let quotaErrorMessage: string | null = null;
     for (const item of queue) {
       updateUploadItem(item.id, { state: "uploading", message: undefined });
       try {
@@ -191,14 +192,18 @@ export function WorkspacePage() {
               : `已完成索引，共 ${response.chunk_count} 个片段`,
         });
       } catch (error) {
+        const message = getApiErrorMessage(error);
         updateUploadItem(item.id, {
           state: "error",
-          message: getApiErrorMessage(error),
+          message,
         });
+        if (getApiErrorCode(error) === 20014 && quotaErrorMessage === null) quotaErrorMessage = message;
       }
     }
     setIsUploading(false);
-    setToast(retryOnly ? "失败文件已重新提交，正在后台索引" : "上传批次已提交，正在后台索引");
+    setToast(
+      quotaErrorMessage ?? (retryOnly ? "失败文件已重新提交，正在后台索引" : "上传批次已提交，正在后台索引"),
+    );
   };
 
   const handleDrop = (event: React.DragEvent<HTMLDivElement>) => {

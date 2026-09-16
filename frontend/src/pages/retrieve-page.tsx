@@ -11,7 +11,8 @@ import {
   Sparkles,
   TriangleAlert,
 } from "lucide-react";
-import { useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useState, type FormEvent, type ReactNode } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { useSearchParams } from "react-router-dom";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
@@ -19,10 +20,14 @@ import { HelpTooltip } from "../components/ui/help-tooltip";
 import { Input } from "../components/ui/input";
 import { Textarea } from "../components/ui/textarea";
 import { getApiErrorMessage } from "../lib/api";
+import { getProfileUpgradeMessage, tenantPlanMeta } from "../lib/tenant-plan";
+import { authService } from "../services/authService";
 import { ragService, type RetrievePayload } from "../services/rag";
 import type {
+  AuthMeData,
   QueryProcessingMetadata,
   RagRetrieveResponse,
+  RetrieveProfile,
   RetrievalMode,
   RetrievedChunk,
 } from "../types";
@@ -33,10 +38,18 @@ const retrievalModes: Array<{ value: RetrievalMode; label: string; description: 
   { value: "hybrid", label: "hybrid", description: "RRF 融合" },
 ];
 
+const retrievalProfiles: Array<{ value: RetrieveProfile; label: string; description: string }> = [
+  { value: "speed", label: "追求速度", description: "vector 检索，响应最快" },
+  { value: "balanced", label: "均衡", description: "hybrid 融合召回，适合日常查询" },
+  { value: "quality", label: "追求质量", description: "hybrid + rerank + query 改写" },
+  { value: "custom", label: "自定义", description: "手动调整高级检索参数" },
+];
+
 export function RetrievePage() {
   const [searchParams] = useSearchParams();
   const [kbId, setKbId] = useState(() => searchParams.get("kb_id") ?? "");
   const [query, setQuery] = useState("");
+  const [profile, setProfile] = useState<RetrieveProfile>("balanced");
   const [topK, setTopK] = useState("5");
   const [mode, setMode] = useState<RetrievalMode>("hybrid");
   const [vectorTopK, setVectorTopK] = useState("20");
@@ -49,6 +62,30 @@ export function RetrievePage() {
   const [isRunning, setIsRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const authQuery = useQuery<AuthMeData>({
+    queryKey: ["auth-me"],
+    queryFn: authService.fetchAuthMe,
+  });
+  const tenantInfo = authQuery.data;
+  const visibleRetrievalModes = tenantInfo?.features.hybrid_allowed
+    ? retrievalModes
+    : retrievalModes.filter((item) => item.value !== "hybrid");
+
+  useEffect(() => {
+    if (!tenantInfo) return;
+
+    setProfile((current) =>
+      tenantInfo.features.allowed_profiles.includes(current)
+        ? current
+        : tenantInfo.features.allowed_profiles[0] ?? "speed",
+    );
+    if (!tenantInfo.features.hybrid_allowed) {
+      setMode((current) => (current === "hybrid" ? "vector" : current));
+    }
+    if (!tenantInfo.features.rerank_allowed) setRerankEnabled(false);
+    if (!tenantInfo.features.query_rewrite_allowed) setQueryRewriteEnabled(false);
+  }, [tenantInfo]);
+
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setError(null);
@@ -60,37 +97,60 @@ export function RetrievePage() {
       return;
     }
 
-    const topKValue = parsePositiveInteger(topK);
-    const vectorTopKValue = parsePositiveInteger(vectorTopK);
-    const bm25TopKValue = parsePositiveInteger(bm25TopK);
-    const rrfKValue = parsePositiveInteger(rrfK);
-    const rerankTopNValue = parsePositiveInteger(rerankTopN);
-    if (!topKValue || !vectorTopKValue || !bm25TopKValue || !rrfKValue || (rerankEnabled && !rerankTopNValue)) {
-      setError("检索参数必须是大于 0 的整数。");
+    if (!tenantInfo) {
+      setError(authQuery.isError ? getApiErrorMessage(authQuery.error) : "正在读取当前租户的套餐能力，请稍候。");
       return;
     }
-
-    const retrievalOptions: RetrievePayload["retrieval_options"] = { mode };
-    if (mode === "vector") retrievalOptions.vector_top_k = vectorTopKValue;
-    if (mode === "bm25") retrievalOptions.bm25_top_k = bm25TopKValue;
-    if (mode === "hybrid") {
-      retrievalOptions.vector_top_k = vectorTopKValue;
-      retrievalOptions.bm25_top_k = bm25TopKValue;
-      retrievalOptions.rrf_k = rrfKValue;
+    if (!tenantInfo.features.allowed_profiles.includes(profile)) {
+      setError("当前套餐不支持所选检索档位，请先升级套餐。");
+      return;
+    }
+    if (mode === "hybrid" && !tenantInfo.features.hybrid_allowed) {
+      setError("当前套餐不支持 hybrid 检索，请调整自定义模式。");
+      return;
     }
 
     const payload: RetrievePayload = {
       kb_id: normalizedKbId,
       user_id: "debug_user",
       query: normalizedQuery,
-      top_k: topKValue,
-      retrieval_options: retrievalOptions,
+      profile,
     };
-    if (rerankEnabled) {
-      payload.rerank_options = { enabled: true, top_n: rerankTopNValue ?? 5 };
-    }
-    if (queryRewriteEnabled) {
-      payload.query_options = { enabled: true, strategy: "rewrite" };
+
+    if (profile === "custom") {
+      const topKValue = parsePositiveInteger(topK);
+      const vectorTopKValue = mode === "bm25" ? undefined : parsePositiveInteger(vectorTopK);
+      const bm25TopKValue = mode === "vector" ? undefined : parsePositiveInteger(bm25TopK);
+      const rrfKValue = mode === "hybrid" ? parsePositiveInteger(rrfK) : undefined;
+      const rerankTopNValue = rerankEnabled ? parsePositiveInteger(rerankTopN) : undefined;
+      if (
+        !topKValue ||
+        (mode !== "bm25" && !vectorTopKValue) ||
+        (mode !== "vector" && !bm25TopKValue) ||
+        (mode === "hybrid" && !rrfKValue) ||
+        (rerankEnabled && !rerankTopNValue)
+      ) {
+        setError("检索参数必须是大于 0 的整数。");
+        return;
+      }
+
+      const retrievalOptions: NonNullable<RetrievePayload["retrieval_options"]> = { mode };
+      if (mode === "vector") retrievalOptions.vector_top_k = vectorTopKValue;
+      if (mode === "bm25") retrievalOptions.bm25_top_k = bm25TopKValue;
+      if (mode === "hybrid") {
+        retrievalOptions.vector_top_k = vectorTopKValue;
+        retrievalOptions.bm25_top_k = bm25TopKValue;
+        retrievalOptions.rrf_k = rrfKValue;
+      }
+
+      payload.top_k = topKValue;
+      payload.retrieval_options = retrievalOptions;
+      if (rerankEnabled && tenantInfo.features.rerank_allowed) {
+        payload.rerank_options = { enabled: true, top_n: rerankTopNValue ?? 5 };
+      }
+      if (queryRewriteEnabled && tenantInfo.features.query_rewrite_allowed) {
+        payload.query_options = { enabled: true, strategy: "rewrite" };
+      }
     }
 
     setResult(null);
@@ -138,6 +198,62 @@ export function RetrievePage() {
         </summary>
         <div className="space-y-6 px-5 py-6 sm:px-6">
           <div className="rounded-xl border border-line bg-paper/70 p-4 sm:p-5">
+            <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-start">
+              <div>
+                <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-muted">检索档位</p>
+                <p className="mt-2 text-xs leading-5 text-muted">选择本次请求使用的服务端预设，套餐不支持的档位会锁定。</p>
+              </div>
+              {tenantInfo && (
+                <Badge className={tenantPlanMeta[tenantInfo.plan].className}>当前套餐：{tenantPlanMeta[tenantInfo.plan].label}</Badge>
+              )}
+            </div>
+            <div role="radiogroup" aria-label="检索档位" className="mt-4 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+              {retrievalProfiles.map((item) => {
+                const active = profile === item.value;
+                const allowed = Boolean(tenantInfo?.features.allowed_profiles.includes(item.value));
+                const locked = Boolean(tenantInfo) && !allowed;
+                const upgradeMessage = tenantInfo
+                  ? getProfileUpgradeMessage(tenantInfo.plan, item.value, item.label)
+                  : "";
+                return (
+                  <div key={item.value} className="relative min-w-0">
+                    <button
+                      type="button"
+                      role="radio"
+                      aria-checked={active}
+                      disabled={!tenantInfo || !allowed}
+                      onClick={() => {
+                        setProfile(item.value);
+                        setError(null);
+                      }}
+                      className={`flex min-h-[76px] w-full flex-col items-start justify-center rounded-xl border px-3.5 pr-10 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+                        active
+                          ? "border-moss bg-moss/8 text-moss shadow-sm"
+                          : "border-line bg-white text-muted hover:border-moss/35 hover:text-ink"
+                      }`}
+                    >
+                      <span className="text-sm font-bold">{item.label}</span>
+                      <span className="mt-1 text-[11px] font-medium leading-4 opacity-75">{item.description}</span>
+                    </button>
+                    {locked && (
+                      <span className="absolute right-2 top-2">
+                        <HelpTooltip content={upgradeMessage} label={`${item.label} 升级提示`} placement="top" />
+                      </span>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+            {authQuery.isLoading && <p className="mt-3 text-xs text-muted">正在读取当前租户的套餐能力...</p>}
+            {authQuery.isError && (
+              <div className="mt-3 flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2.5 text-xs leading-5 text-danger" role="alert">
+                <AlertCircle size={14} className="mt-0.5 shrink-0" />
+                <span>{getApiErrorMessage(authQuery.error)}</span>
+              </div>
+            )}
+          </div>
+
+          <div className="rounded-xl border border-line bg-paper/70 p-4 sm:p-5">
             <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-muted">检索范围</p>
             <div className="mt-4 grid gap-4">
               <FieldRow label="kb_id" required>
@@ -148,82 +264,103 @@ export function RetrievePage() {
 
           <div>
             <p className="border-b border-line pb-3 text-[10px] font-bold uppercase tracking-[0.16em] text-muted">检索参数</p>
-            <div className="mt-4 space-y-4">
-              <FieldRow label="top_k" help="最终返回的 chunk 数量。数值越大，结果覆盖面越广，但响应内容也会更多。">
-                <Input type="number" min={1} value={topK} onChange={(event) => setTopK(event.target.value)} className="max-w-[180px]" />
-              </FieldRow>
-              <FieldRow label="检索模式" help="vector 适合语义相似问题，bm25 适合关键词匹配，hybrid 会融合两路结果。">
-                <div role="radiogroup" aria-label="检索模式" className="grid max-w-[620px] grid-cols-1 gap-2 sm:grid-cols-3">
-                  {retrievalModes.map((item) => {
-                    const active = mode === item.value;
-                    return (
-                      <button
-                        key={item.value}
-                        type="button"
-                        role="radio"
-                        aria-checked={active}
-                        onClick={() => {
-                          setMode(item.value);
-                          setResult(null);
-                          setError(null);
-                        }}
-                        className={`flex min-h-[58px] flex-col items-start justify-center rounded-xl border px-3.5 text-left transition-colors ${
-                          active ? "border-moss bg-moss/8 text-moss shadow-sm" : "border-line bg-white text-muted hover:border-moss/35 hover:text-ink"
-                        }`}
-                      >
-                        <span className="text-sm font-bold">{item.label}</span>
-                        <span className="mt-1 text-[11px] font-medium opacity-75">{item.description}</span>
-                      </button>
-                    );
-                  })}
-                </div>
-              </FieldRow>
-              {mode === "hybrid" && (
-                <FieldRow label="hybrid 参数" help="hybrid 会分别召回向量和关键词结果，再用 RRF 合并排序。">
-                  <div className="grid gap-3 sm:grid-cols-3">
-                    <CompactNumberField label="vector_top_k" help="向量召回阶段保留的候选数量。" value={vectorTopK} onChange={setVectorTopK} />
-                    <CompactNumberField label="bm25_top_k" help="BM25 关键词召回阶段保留的候选数量。" value={bm25TopK} onChange={setBm25TopK} />
-                    <CompactNumberField label="rrf_k" help="RRF 融合中的平滑常数，用于降低单一路径高排名的影响。" value={rrfK} onChange={setRrfK} />
+            {profile === "custom" ? (
+              <div className="mt-4 space-y-4">
+                <FieldRow label="top_k" help="最终返回的 chunk 数量。数值越大，结果覆盖面越广，但响应内容也会更多。">
+                  <Input type="number" min={1} value={topK} onChange={(event) => setTopK(event.target.value)} className="max-w-[180px]" />
+                </FieldRow>
+                <FieldRow label="检索模式" help="vector 适合语义相似问题，bm25 适合关键词匹配，hybrid 会融合两路结果。">
+                  <div role="radiogroup" aria-label="检索模式" className="grid max-w-[620px] grid-cols-1 gap-2 sm:grid-cols-3">
+                    {visibleRetrievalModes.map((item) => {
+                      const active = mode === item.value;
+                      return (
+                        <button
+                          key={item.value}
+                          type="button"
+                          role="radio"
+                          aria-checked={active}
+                          onClick={() => {
+                            setMode(item.value);
+                            setError(null);
+                          }}
+                          className={`flex min-h-[58px] flex-col items-start justify-center rounded-xl border px-3.5 text-left transition-colors ${
+                            active ? "border-moss bg-moss/8 text-moss shadow-sm" : "border-line bg-white text-muted hover:border-moss/35 hover:text-ink"
+                          }`}
+                        >
+                          <span className="text-sm font-bold">{item.label}</span>
+                          <span className="mt-1 text-[11px] font-medium opacity-75">{item.description}</span>
+                        </button>
+                      );
+                    })}
                   </div>
                 </FieldRow>
-              )}
-              <FieldRow label="rerank" help="对初步召回结果再次排序，通常能提升相关性，但会增加处理耗时。">
-                <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-                  <label className="inline-flex h-11 w-fit cursor-pointer items-center gap-2.5 rounded-xl border border-line bg-white px-3.5 text-sm font-semibold text-ink">
-                    <input
-                      type="checkbox"
-                      checked={rerankEnabled}
-                      onChange={(event) => setRerankEnabled(event.target.checked)}
-                      className="h-4 w-4 accent-[#1e725c]"
-                    />
-                    启用重排
-                  </label>
-                  {rerankEnabled && (
-                    <label className="flex items-center gap-3 text-sm font-semibold text-ink">
-                      <span className="whitespace-nowrap text-xs text-muted">rerank top_n</span>
-                      <Input type="number" min={1} value={rerankTopN} onChange={(event) => setRerankTopN(event.target.value)} className="w-[120px]" />
+                {mode === "hybrid" && (
+                  <FieldRow label="hybrid 参数" help="hybrid 会分别召回向量和关键词结果，再用 RRF 合并排序。">
+                    <div className="grid gap-3 sm:grid-cols-3">
+                      <CompactNumberField label="vector_top_k" help="向量召回阶段保留的候选数量。" value={vectorTopK} onChange={setVectorTopK} />
+                      <CompactNumberField label="bm25_top_k" help="BM25 关键词召回阶段保留的候选数量。" value={bm25TopK} onChange={setBm25TopK} />
+                      <CompactNumberField label="rrf_k" help="RRF 融合中的平滑常数，用于降低单一路径高排名的影响。" value={rrfK} onChange={setRrfK} />
+                    </div>
+                  </FieldRow>
+                )}
+                <FieldRow label="rerank" help="对初步召回结果再次排序，通常能提升相关性，但会增加处理耗时。">
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+                    <label className={`inline-flex h-11 w-fit items-center gap-2.5 rounded-xl border border-line bg-white px-3.5 text-sm font-semibold text-ink ${tenantInfo?.features.rerank_allowed ? "cursor-pointer" : "cursor-not-allowed opacity-50"}`}>
+                      <input
+                        type="checkbox"
+                        checked={rerankEnabled}
+                        disabled={!tenantInfo?.features.rerank_allowed}
+                        onChange={(event) => setRerankEnabled(event.target.checked)}
+                        className="h-4 w-4 accent-[#1e725c]"
+                      />
+                      启用重排
                     </label>
-                  )}
-                </div>
-              </FieldRow>
-              <FieldRow label="query 改写">
-                <div className="flex flex-wrap items-center gap-2.5">
-                  <label className="inline-flex h-11 w-fit cursor-pointer items-center gap-2.5 rounded-xl border border-line bg-white px-3.5 text-sm font-semibold text-ink">
-                    <input
-                      type="checkbox"
-                      checked={queryRewriteEnabled}
-                      onChange={(event) => setQueryRewriteEnabled(event.target.checked)}
-                      className="h-4 w-4 accent-[#1e725c]"
-                    />
-                    启用 query 改写
-                  </label>
-                  <HelpTooltip
-                    content="用 AI 把口语问题改成更好搜的说法；更慢、消耗 LLM，可对比开关效果。"
-                    label="query 改写说明"
-                  />
-                </div>
-              </FieldRow>
-            </div>
+                    {tenantInfo && !tenantInfo.features.rerank_allowed && (
+                      <HelpTooltip
+                        content={getProfileUpgradeMessage(tenantInfo.plan, "quality", "重排")}
+                        label="重排升级提示"
+                      />
+                    )}
+                    {rerankEnabled && (
+                      <label className="flex items-center gap-3 text-sm font-semibold text-ink">
+                        <span className="whitespace-nowrap text-xs text-muted">rerank top_n</span>
+                        <Input type="number" min={1} value={rerankTopN} onChange={(event) => setRerankTopN(event.target.value)} className="w-[120px]" />
+                      </label>
+                    )}
+                  </div>
+                </FieldRow>
+                <FieldRow label="query 改写">
+                  <div className="flex flex-wrap items-center gap-2.5">
+                    <label className={`inline-flex h-11 w-fit items-center gap-2.5 rounded-xl border border-line bg-white px-3.5 text-sm font-semibold text-ink ${tenantInfo?.features.query_rewrite_allowed ? "cursor-pointer" : "cursor-not-allowed opacity-50"}`}>
+                      <input
+                        type="checkbox"
+                        checked={queryRewriteEnabled}
+                        disabled={!tenantInfo?.features.query_rewrite_allowed}
+                        onChange={(event) => setQueryRewriteEnabled(event.target.checked)}
+                        className="h-4 w-4 accent-[#1e725c]"
+                      />
+                      启用 query 改写
+                    </label>
+                    {tenantInfo && !tenantInfo.features.query_rewrite_allowed ? (
+                      <HelpTooltip
+                        content={getProfileUpgradeMessage(tenantInfo.plan, "quality", "query 改写")}
+                        label="query 改写升级提示"
+                      />
+                    ) : (
+                      <HelpTooltip
+                        content="用 AI 把口语问题改成更好搜的说法；更慢、消耗 LLM，可对比开关效果。"
+                        label="query 改写说明"
+                      />
+                    )}
+                  </div>
+                </FieldRow>
+              </div>
+            ) : (
+              <div className="mt-4 flex flex-wrap items-center gap-2 rounded-xl border border-dashed border-line bg-paper/60 px-4 py-3 text-xs text-muted">
+                <Badge className="border-moss/15 bg-moss/8 font-mono text-moss">profile: {profile}</Badge>
+                <span>高级参数由服务端预设展开，本次请求只提交 profile。</span>
+              </div>
+            )}
           </div>
         </div>
       </details>
@@ -251,9 +388,9 @@ export function RetrievePage() {
             </div>
           )}
           <div className="mt-5 flex justify-end border-t border-line pt-5">
-            <Button type="submit" disabled={isRunning}>
+            <Button type="submit" disabled={isRunning || authQuery.isLoading || authQuery.isError || !tenantInfo}>
               {isRunning ? <LoaderCircle size={16} className="animate-spin" /> : <Search size={16} />}
-              {isRunning ? "检索中..." : "检索"}
+              {isRunning ? "检索中..." : authQuery.isLoading ? "读取套餐..." : "检索"}
             </Button>
           </div>
         </form>
@@ -636,7 +773,7 @@ function SummaryMetric({
 
 function parsePositiveInteger(value: string) {
   const parsed = Number(value);
-  return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
 }
 
 function formatScore(value: number) {

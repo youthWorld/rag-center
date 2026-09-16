@@ -40,41 +40,10 @@ textarea:focus-visible {
 }
 
 .help-tooltip-panel {
-  visibility: hidden;
-  position: absolute;
+  position: fixed;
   opacity: 0;
   overflow-wrap: anywhere;
   transition: opacity 150ms ease;
-}
-
-.help-tooltip:hover > .help-tooltip-panel,
-.help-tooltip:focus-within > .help-tooltip-panel {
-  visibility: visible;
-  opacity: 1;
-}
-
-.help-tooltip[data-placement="top"] > .help-tooltip-panel {
-  bottom: calc(100% + 0.5rem);
-  left: 50%;
-  transform: translateX(-50%);
-}
-
-.help-tooltip[data-placement="bottom"] > .help-tooltip-panel {
-  top: calc(100% + 0.5rem);
-  left: 50%;
-  transform: translateX(-50%);
-}
-
-.help-tooltip[data-placement="left"] > .help-tooltip-panel {
-  top: 50%;
-  right: calc(100% + 0.5rem);
-  transform: translateY(-50%);
-}
-
-.help-tooltip[data-placement="right"] > .help-tooltip-panel {
-  top: 50%;
-  left: calc(100% + 0.5rem);
-  transform: translateY(-50%);
 }
 
 ::selection {

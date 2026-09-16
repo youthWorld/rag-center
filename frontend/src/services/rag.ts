@@ -2,7 +2,8 @@ import { api, type ApiEnvelope } from "../lib/api";
 import type {
   RagRetrieveResponse,
   QueryOptions,
-  RetrievalMode,
+  RetrieveProfile,
+  RetrievalOptions,
   RerankOptions,
 } from "../types";
 
@@ -10,13 +11,9 @@ export type RetrievePayload = {
   kb_id: string;
   user_id: string;
   query: string;
-  top_k: number;
-  retrieval_options: {
-    mode: RetrievalMode;
-    vector_top_k?: number;
-    bm25_top_k?: number;
-    rrf_k?: number;
-  };
+  profile: RetrieveProfile;
+  top_k?: number;
+  retrieval_options?: RetrievalOptions;
   rerank_options?: RerankOptions;
   query_options?: QueryOptions;
 };

@@ -15,6 +15,9 @@ class Tenant(Base):
 
     id: Mapped[str] = mapped_column(String(128), primary_key=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
+    plan: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="free", server_default="free"
+    )
     status: Mapped[str] = mapped_column(
         String(16), nullable=False, default="active", server_default="active"
     )

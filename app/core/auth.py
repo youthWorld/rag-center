@@ -27,6 +27,7 @@ class TenantContext:
     key_id: str | None
     key_prefix: str | None
     key_name: str | None = None
+    plan: str = "free"
 
 
 def generate_api_key() -> tuple[str, str, str]:
@@ -66,6 +67,7 @@ async def authenticate_api_key(session: AsyncSession, api_key: str) -> TenantCon
         key_id=record.id,
         key_prefix=record.key_prefix,
         key_name=record.name,
+        plan=getattr(tenant, "plan", "free"),
     )
 
 

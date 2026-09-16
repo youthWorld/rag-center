@@ -47,11 +47,31 @@ export type KnowledgeBaseTenantTree = {
   knowledge_bases: KnowledgeBaseTreeItem[];
 };
 
+export type TenantPlan = "free" | "standard" | "pro";
+
 export type AuthMeData = {
   tenant_id: string;
   tenant_name: string;
   key_prefix?: string | null;
   key_name?: string | null;
+  plan: TenantPlan;
+  features: {
+    allowed_profiles: RetrieveProfile[];
+    hybrid_allowed: boolean;
+    rerank_allowed: boolean;
+    query_rewrite_allowed: boolean;
+  };
+  limits: {
+    retrieve_qps: number;
+    retrieve_daily: number;
+    max_kb: number;
+    max_documents_per_kb: number;
+    max_processing_documents: number;
+  };
+  usage: {
+    kb_count: number;
+    retrieve_daily_count: number;
+  };
 };
 
 export type DocumentUploadResponse = {
@@ -82,6 +102,7 @@ export type UploadItem = {
 };
 
 export type RetrievalMode = "vector" | "bm25" | "hybrid";
+export type RetrieveProfile = "speed" | "balanced" | "quality" | "custom";
 
 export type QueryRewriteStrategy = "noop" | "rewrite";
 
@@ -98,8 +119,8 @@ export type RetrievalOptions = {
 };
 
 export type RerankOptions = {
-  enabled: true;
-  top_n: number;
+  enabled?: boolean;
+  top_n?: number;
 };
 
 export type QueryProcessingMetadata = {
@@ -155,6 +176,13 @@ export type RetrievalMetadata = {
     [key: string]: unknown;
   };
   query_processing?: QueryProcessingMetadata | null;
+  tenant_policy?: {
+    plan?: TenantPlan;
+    retrieve_profile?: RetrieveProfile;
+    effective_mode?: RetrievalMode;
+    effective_rerank?: boolean;
+    effective_query_rewrite?: boolean;
+  };
   [key: string]: unknown;
 };
 

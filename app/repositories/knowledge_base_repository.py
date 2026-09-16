@@ -51,6 +51,13 @@ class KnowledgeBaseRepository:
         result = await self.session.execute(statement)
         return int(result.scalar_one())
 
+    async def count_by_tenant(self, *, tenant_id: str) -> int:
+        statement = select(func.count(KnowledgeBase.id)).where(
+            KnowledgeBase.tenant_id == tenant_id
+        )
+        result = await self.session.execute(statement)
+        return int(result.scalar_one())
+
     async def delete_by_id(self, *, kb_id: str, tenant_id: str) -> None:
         statement = delete(KnowledgeBase).where(
             KnowledgeBase.id == kb_id,
