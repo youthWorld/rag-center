@@ -8,6 +8,8 @@ from app.providers.embedding.openai_compatible import OpenAICompatibleEmbeddingP
 from app.providers.keyword_search.base import KeywordSearchProvider
 from app.providers.keyword_search.elasticsearch import ElasticsearchKeywordSearchProvider
 from app.providers.llm.openai_compatible import OpenAICompatibleLLMProvider
+from app.providers.query.llm_rewrite import LLMRewriteProcessor
+from app.providers.query.pipeline import QueryPipeline
 from app.providers.rerank.base import RerankProvider
 from app.providers.rerank.llm import LLMRerankProvider
 from app.providers.rerank.noop import NoopRerankProvider
@@ -106,4 +108,11 @@ def get_rag_service(
         vector_store=PgVectorStore(session),
         keyword_search_provider_factory=lambda: get_keyword_search_provider(app_settings),
         rerank_provider=get_rerank_provider(app_settings),
+        query_pipeline=QueryPipeline(
+            rewrite_enabled=app_settings.query_rewrite_enabled,
+            rewrite_processor=LLMRewriteProcessor(
+                get_llm_provider(app_settings),
+                timeout_ms=app_settings.query_rewrite_timeout_ms,
+            ),
+        ),
     )

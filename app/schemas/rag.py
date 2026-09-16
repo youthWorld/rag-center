@@ -1,9 +1,16 @@
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
 from app.schemas.hybrid_search import RetrievalOptions, RetrievalSource
 from app.schemas.rerank import RerankOptions
+
+QueryRewriteStrategy = Literal["noop", "rewrite"]
+
+
+class QueryOptions(BaseModel):
+    enabled: bool | None = None
+    strategy: QueryRewriteStrategy | None = None
 
 
 class RagRetrieveRequest(BaseModel):
@@ -13,6 +20,7 @@ class RagRetrieveRequest(BaseModel):
     top_k: int | None = Field(default=None, ge=1)
     retrieval_options: RetrievalOptions | None = None
     rerank_options: RerankOptions | None = None
+    query_options: QueryOptions | None = None
 
     @field_validator("kb_id", "user_id", "query")
     @classmethod

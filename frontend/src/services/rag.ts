@@ -1,6 +1,7 @@
 import { api, type ApiEnvelope } from "../lib/api";
 import type {
   RagRetrieveResponse,
+  QueryOptions,
   RetrievalMode,
   RerankOptions,
 } from "../types";
@@ -17,6 +18,7 @@ export type RetrievePayload = {
     rrf_k?: number;
   };
   rerank_options?: RerankOptions;
+  query_options?: QueryOptions;
 };
 
 async function retrieve(payload: RetrievePayload) {

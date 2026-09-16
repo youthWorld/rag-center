@@ -9,6 +9,7 @@ from app.core.exceptions import KnowledgeBaseNotFoundError, ServiceConfiguration
 from app.core.logging import get_logger
 from app.providers.embedding.base import EmbeddingProvider
 from app.providers.keyword_search.base import KeywordSearchProvider
+from app.providers.query.pipeline import QueryPipeline
 from app.providers.rerank.base import RerankProvider
 from app.providers.rerank.noop import NoopRerankProvider
 from app.providers.vectorstores.base import VectorStore
@@ -32,6 +33,7 @@ class RagService:
         keyword_search_provider_factory: Callable[[], KeywordSearchProvider] | None = None,
         hybrid_search_service: HybridSearchService | None = None,
         rerank_provider: RerankProvider | None = None,
+        query_pipeline: QueryPipeline | None = None,
     ) -> None:
         self.session = session
         self.settings = settings
@@ -45,6 +47,9 @@ class RagService:
             rrf_k=settings.hybrid_rrf_k
         )
         self.rerank_provider = rerank_provider or NoopRerankProvider()
+        self.query_pipeline = query_pipeline or QueryPipeline(
+            rewrite_enabled=settings.query_rewrite_enabled
+        )
         self.logger = get_logger(__name__)
 
     async def retrieve(
@@ -63,6 +68,12 @@ class RagService:
         if knowledge_base is None:
             raise KnowledgeBaseNotFoundError()
 
+        query_processing = await self.query_pipeline.process(
+            request.query,
+            knowledge_base=knowledge_base,
+            query_options=request.query_options,
+        )
+        search_query = query_processing.search_query
         started_at = time.perf_counter()
         mode = self._resolve_retrieval_mode(request)
         vector_top_k, bm25_top_k, top_k, rrf_k = self._resolve_retrieval_options(
@@ -75,7 +86,7 @@ class RagService:
                 "vector_top_k=%s | bm25_top_k=%s",
                 tenant_id,
                 knowledge_base.id,
-                request.query,
+                search_query,
                 vector_top_k,
                 bm25_top_k,
             )
@@ -84,7 +95,7 @@ class RagService:
         bm25_results: list[dict[str, Any]] = []
         if mode in {"vector", "hybrid"}:
             vector_started_at = time.perf_counter()
-            query_vector = await self.embedding_provider.embed_query(request.query)
+            query_vector = await self.embedding_provider.embed_query(search_query)
             vector_results = await self.vector_store.similarity_search(
                 query_vector,
                 tenant_id=tenant_id,
@@ -96,7 +107,7 @@ class RagService:
                 "vector_top_k=%s | vector_count=%s | cost_ms=%s",
                 tenant_id,
                 knowledge_base.id,
-                request.query,
+                search_query,
                 vector_top_k,
                 len(vector_results),
                 int((time.perf_counter() - vector_started_at) * 1000),
@@ -114,7 +125,7 @@ class RagService:
             bm25_started_at = time.perf_counter()
             try:
                 bm25_results = await keyword_search_provider.keyword_search(
-                    query=request.query,
+                    query=search_query,
                     tenant_id=tenant_id,
                     kb_id=knowledge_base.id,
                     top_k=bm25_top_k,
@@ -130,7 +141,7 @@ class RagService:
                     "bm25_count=%s | fused_count=%s | cost_ms=%s | error=%s",
                     tenant_id,
                     knowledge_base.id,
-                    request.query,
+                    search_query,
                     vector_top_k,
                     bm25_top_k,
                     len(vector_results),
@@ -144,7 +155,7 @@ class RagService:
                     "degraded_reason=%s | vector_count=%s | cost_ms=%s",
                     tenant_id,
                     knowledge_base.id,
-                    request.query,
+                    search_query,
                     degraded_reason,
                     len(vector_results),
                     int((time.perf_counter() - started_at) * 1000),
@@ -155,7 +166,7 @@ class RagService:
                     "bm25_top_k=%s | bm25_count=%s | cost_ms=%s",
                     tenant_id,
                     knowledge_base.id,
-                    request.query,
+                    search_query,
                     bm25_top_k,
                     len(bm25_results),
                     int((time.perf_counter() - bm25_started_at) * 1000),
@@ -183,7 +194,7 @@ class RagService:
                 "vector_count=%s | bm25_count=%s | fused_count=%s | cost_ms=%s",
                 tenant_id,
                 knowledge_base.id,
-                request.query,
+                search_query,
                 len(vector_results),
                 len(bm25_results),
                 fused_count,
@@ -264,7 +275,7 @@ class RagService:
             "latency_ms=%s | cost_ms=%s",
             tenant_id,
             knowledge_base.id,
-            request.query,
+            search_query,
             vector_top_k,
             bm25_top_k,
             len(vector_results),
@@ -283,6 +294,11 @@ class RagService:
                 "top_k": top_k,
                 "latency_ms": latency_ms,
                 "vector_store": self.settings.vector_store,
+                "query_processing": (
+                    query_processing.to_dict()
+                    if query_processing.should_expose()
+                    else None
+                ),
                 "retrieval": self._build_retrieval_metadata(
                     mode=mode,
                     rrf_k=rrf_k,

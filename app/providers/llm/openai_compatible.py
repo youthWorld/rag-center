@@ -78,7 +78,8 @@ class OpenAICompatibleLLMProvider(LLMProvider):
         system_prompt: str,
         user_payload: dict[str, Any],
         temperature: float = 0.0,
-        timeout_seconds: int | None = None,
+        timeout_seconds: float | None = None,
+        max_tokens: int | None = None,
     ) -> dict[str, Any]:
         request_kwargs: dict[str, Any] = {
             "model": self.settings.llm_model,
@@ -92,9 +93,64 @@ class OpenAICompatibleLLMProvider(LLMProvider):
             "temperature": temperature,
             "response_format": {"type": "json_object"},
         }
+        if max_tokens is not None:
+            request_kwargs["max_tokens"] = max_tokens
         if timeout_seconds is not None:
             request_kwargs["timeout"] = timeout_seconds
 
+        response = await self._chat_completion(
+            request_kwargs=request_kwargs,
+            user_payload=user_payload,
+            operation="chat_json",
+        )
+        content = self._extract_content(response)
+        try:
+            payload = json.loads(content)
+        except json.JSONDecodeError as exception:
+            raise LLMProviderError("chat completion returned invalid JSON") from exception
+        if not isinstance(payload, dict):
+            raise LLMProviderError("chat completion JSON response must be an object")
+        return payload
+
+    async def chat_text(
+        self,
+        *,
+        system_prompt: str,
+        user_payload: dict[str, Any],
+        temperature: float = 0.0,
+        timeout_seconds: float | None = None,
+        max_tokens: int | None = None,
+    ) -> str:
+        request_kwargs: dict[str, Any] = {
+            "model": self.settings.llm_model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {
+                    "role": "user",
+                    "content": json.dumps(user_payload, ensure_ascii=False),
+                },
+            ],
+            "temperature": temperature,
+        }
+        if max_tokens is not None:
+            request_kwargs["max_tokens"] = max_tokens
+        if timeout_seconds is not None:
+            request_kwargs["timeout"] = timeout_seconds
+
+        response = await self._chat_completion(
+            request_kwargs=request_kwargs,
+            user_payload=user_payload,
+            operation="chat_text",
+        )
+        return self._extract_content(response).strip()
+
+    async def _chat_completion(
+        self,
+        *,
+        request_kwargs: dict[str, Any],
+        user_payload: dict[str, Any],
+        operation: str,
+    ) -> Any:
         try:
             response = await log_llm_call(
                 lambda: self._get_client().chat.completions.create(**request_kwargs),
@@ -111,14 +167,6 @@ class OpenAICompatibleLLMProvider(LLMProvider):
             raise map_llm_exception(
                 exception,
                 model=self.settings.llm_model,
-                operation="chat_json",
+                operation=operation,
             ) from exception
-
-        content = self._extract_content(response)
-        try:
-            payload = json.loads(content)
-        except json.JSONDecodeError as exception:
-            raise LLMProviderError("chat completion returned invalid JSON") from exception
-        if not isinstance(payload, dict):
-            raise LLMProviderError("chat completion JSON response must be an object")
-        return payload
+        return response

@@ -120,6 +120,45 @@ hybrid 模式先合并两路召回结果，再按 `1 / (rrf_k + rank)` 计算 RR
 
 重排序由 `LLMRerankProvider` 通过通用 `LLMProvider` 调用 OpenAI-compatible Chat Completions，不绑定具体模型厂商。相关配置包括 `LLM_PROVIDER`、`LLM_BASE_URL`、`LLM_API_KEY`、`LLM_MODEL`、`RERANK_ENABLED`、`RERANK_TOP_N`、`RERANK_MAX_CANDIDATES` 和 `RERANK_CHUNK_MAX_CHARS`，完整示例见 `.env.example`。
 
+### 提问语义优化
+
+检索前可以按请求启用 LLM query 改写：
+
+```json
+{
+  "kb_id": "<knowledge-base-id>",
+  "user_id": "user_demo",
+  "query": "背调要问啥",
+  "query_options": {
+    "enabled": true,
+    "strategy": "rewrite"
+  }
+}
+```
+
+改写使用已有的 `LLM_PROVIDER`、`LLM_BASE_URL`、`LLM_API_KEY` 和 `LLM_MODEL`，全局默认由 `QUERY_REWRITE_ENABLED=false` 关闭，超时由 `QUERY_REWRITE_TIMEOUT_MS` 控制。LLM 失败时会回退到用户原话，不影响检索；改写耗时单独记录在 `metadata.query_processing.rewrite_latency_ms`，不计入检索 `latency_ms`。
+
+知识库的 `settings` 字段可配置词表扩展。词表始终在改写之后执行，即使没有启用 LLM 改写也会生效：
+
+```json
+{
+  "synonyms": [
+    {"terms": ["背调"], "expand": ["背景调查", "标准问题清单"]}
+  ],
+  "rewrite_hint": "补充给 LLM 改写 Prompt 的领域说明"
+}
+```
+
+使用运维脚本会**整文件覆盖**指定知识库的 `settings` 字段，并校验知识库存在：
+
+```powershell
+uv run python scripts/update_kb_settings.py `
+  --kb_id <kb_id> `
+  --settings-file examples/kb_settings.example.json
+```
+
+脚本示例文件见 `examples/kb_settings.example.json`。
+
 ## 多用户鉴权
 
 默认开启多用户鉴权。客户端先创建租户和 API Key，再在请求头中携带 `Authorization: Bearer <api-key>` 调用业务接口：

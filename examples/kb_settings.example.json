@@ -1,0 +1,45 @@
+{
+  "synonyms": [
+    {
+      "terms": ["LangGraph", "lang graph", "langgraph 工作流", "图工作流"],
+      "expand": ["StateGraph", "状态图", "工作流编排"]
+    },
+    {
+      "terms": ["StateGraph", "state graph", "状态图"],
+      "expand": ["节点", "边", "状态管理"]
+    },
+    {
+      "terms": ["node", "节点", "节点函数"],
+      "expand": ["Node", "状态更新", "节点执行"]
+    },
+    {
+      "terms": ["edge", "边", "条件边", "conditional edge"],
+      "expand": ["路由", "条件路由", "图连接"]
+    },
+    {
+      "terms": ["checkpoint", "checkpointer", "检查点", "断点续跑"],
+      "expand": ["持久化", "状态恢复", "线程级状态"]
+    },
+    {
+      "terms": ["interrupt", "中断", "人工介入", "human in the loop"],
+      "expand": ["人工审核", "恢复执行", "Command"]
+    },
+    {
+      "terms": ["tool", "tools", "工具调用", "ToolNode"],
+      "expand": ["工具节点", "工具路由", "ReAct"]
+    },
+    {
+      "terms": ["stream", "streaming", "流式", "流式输出"],
+      "expand": ["astream", "stream_mode", "实时事件"]
+    },
+    {
+      "terms": ["subgraph", "子图", "嵌套图"],
+      "expand": ["父子图", "状态传递", "模块化工作流"]
+    },
+    {
+      "terms": ["memory", "记忆", "对话记忆"],
+      "expand": ["短期记忆", "长期记忆", "会话状态"]
+    }
+  ],
+  "rewrite_hint": "这是 LangGraph 技术文档知识库，覆盖 StateGraph 状态图、节点与边、条件路由、Checkpointer 持久化、线程级状态、流式执行、中断恢复、人工介入、工具调用、子图和记忆管理。请将口语化问题改写为贴近 LangGraph 官方文档的技术检索短句，保留用户指定的 Python API、类名、方法名和配置项。"
+}

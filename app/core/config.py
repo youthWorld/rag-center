@@ -18,6 +18,8 @@ class Settings(BaseSettings):
     llm_api_key: str = ""
     llm_model: str = "deepseek-chat"
     llm_timeout_seconds: int = 60
+    query_rewrite_enabled: bool = False
+    query_rewrite_timeout_ms: int = 2000
 
     vector_store: str = "pgvector"
     keyword_search_provider: str = "elasticsearch"

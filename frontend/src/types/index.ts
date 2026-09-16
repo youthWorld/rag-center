@@ -54,6 +54,13 @@ export type UploadItem = {
 
 export type RetrievalMode = "vector" | "bm25" | "hybrid";
 
+export type QueryRewriteStrategy = "noop" | "rewrite";
+
+export type QueryOptions = {
+  enabled?: boolean;
+  strategy?: QueryRewriteStrategy;
+};
+
 export type RetrievalOptions = {
   mode: RetrievalMode;
   vector_top_k?: number;
@@ -64,6 +71,18 @@ export type RetrievalOptions = {
 export type RerankOptions = {
   enabled: true;
   top_n: number;
+};
+
+export type QueryProcessingMetadata = {
+  raw_query: string;
+  effective_query: string;
+  search_query: string;
+  strategy: QueryRewriteStrategy;
+  rewrite_latency_ms: number;
+  degraded: boolean;
+  degraded_reason?: string | null;
+  synonym_applied: boolean;
+  synonym_expansions: string[];
 };
 
 export type RetrievedChunk = {
@@ -106,6 +125,7 @@ export type RetrievalMetadata = {
     error?: string;
     [key: string]: unknown;
   };
+  query_processing?: QueryProcessingMetadata | null;
   [key: string]: unknown;
 };
 

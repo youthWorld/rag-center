@@ -8,6 +8,7 @@ import {
   LoaderCircle,
   Search,
   SlidersHorizontal,
+  Sparkles,
   TriangleAlert,
 } from "lucide-react";
 import { useState, type FormEvent, type ReactNode } from "react";
@@ -19,7 +20,12 @@ import { Input } from "../components/ui/input";
 import { Textarea } from "../components/ui/textarea";
 import { getApiErrorMessage } from "../lib/api";
 import { ragService, type RetrievePayload } from "../services/rag";
-import type { RagRetrieveResponse, RetrievalMode, RetrievedChunk } from "../types";
+import type {
+  QueryProcessingMetadata,
+  RagRetrieveResponse,
+  RetrievalMode,
+  RetrievedChunk,
+} from "../types";
 
 const retrievalModes: Array<{ value: RetrievalMode; label: string; description: string }> = [
   { value: "vector", label: "vector", description: "语义相似度" },
@@ -38,6 +44,7 @@ export function RetrievePage() {
   const [rrfK, setRrfK] = useState("60");
   const [rerankEnabled, setRerankEnabled] = useState(false);
   const [rerankTopN, setRerankTopN] = useState("5");
+  const [queryRewriteEnabled, setQueryRewriteEnabled] = useState(false);
   const [result, setResult] = useState<RagRetrieveResponse | null>(null);
   const [isRunning, setIsRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -81,6 +88,9 @@ export function RetrievePage() {
     };
     if (rerankEnabled) {
       payload.rerank_options = { enabled: true, top_n: rerankTopNValue ?? 5 };
+    }
+    if (queryRewriteEnabled) {
+      payload.query_options = { enabled: true, strategy: "rewrite" };
     }
 
     setIsRunning(true);
@@ -193,6 +203,23 @@ export function RetrievePage() {
                       <Input type="number" min={1} value={rerankTopN} onChange={(event) => setRerankTopN(event.target.value)} className="w-[120px]" />
                     </label>
                   )}
+                </div>
+              </FieldRow>
+              <FieldRow label="query 改写">
+                <div className="flex flex-wrap items-center gap-2.5">
+                  <label className="inline-flex h-11 w-fit cursor-pointer items-center gap-2.5 rounded-xl border border-line bg-white px-3.5 text-sm font-semibold text-ink">
+                    <input
+                      type="checkbox"
+                      checked={queryRewriteEnabled}
+                      onChange={(event) => setQueryRewriteEnabled(event.target.checked)}
+                      className="h-4 w-4 accent-[#1e725c]"
+                    />
+                    启用 query 改写
+                  </label>
+                  <HelpTooltip
+                    content="用 AI 把口语问题改成更好搜的说法；更慢、消耗 LLM，可对比开关效果。"
+                    label="query 改写说明"
+                  />
                 </div>
               </FieldRow>
             </div>
@@ -384,6 +411,8 @@ function MetricLabel({ label, help }: { label: string; help?: ReactNode }) {
 }
 
 function RunSummary({ result }: { result: RagRetrieveResponse | null }) {
+  const queryProcessing = result?.metadata.query_processing;
+
   return (
     <section className="rounded-2xl border border-line bg-white shadow-soft">
       <div className="flex items-start gap-3 border-b border-line px-5 py-5 sm:px-6">
@@ -413,6 +442,7 @@ function RunSummary({ result }: { result: RagRetrieveResponse | null }) {
             <SummaryMetric label="bm25" value={result.metadata.retrieval?.bm25_count ?? "—"} />
             <SummaryMetric label="fused" value={result.metadata.retrieval?.fused_count ?? "—"} />
           </div>
+          {queryProcessing && <QueryProcessingSummary processing={queryProcessing} />}
           <div className="flex flex-wrap items-center gap-2 text-xs text-muted">
             {result.metadata.rerank?.enabled ? (
               <Badge className="border-moss/15 bg-moss/8 text-moss">
@@ -421,7 +451,7 @@ function RunSummary({ result }: { result: RagRetrieveResponse | null }) {
             ) : (
               <Badge className="border-line bg-paper text-muted">rerank: disabled</Badge>
             )}
-            {result.metadata.retrieval?.degraded || result.metadata.rerank?.degraded ? (
+            {result.metadata.retrieval?.degraded || result.metadata.rerank?.degraded || queryProcessing?.degraded ? (
               <Badge className="border-amber-200 bg-amber-50 text-amber-700">
                 <TriangleAlert size={13} />
                 degraded
@@ -438,6 +468,58 @@ function RunSummary({ result }: { result: RagRetrieveResponse | null }) {
         </div>
       )}
     </section>
+  );
+}
+
+function QueryProcessingSummary({ processing }: { processing: QueryProcessingMetadata }) {
+  const hasExpandedSearch = processing.search_query !== processing.effective_query;
+
+  return (
+    <div className="rounded-xl border border-line bg-white p-4 text-xs">
+      <div className="flex items-center gap-2 font-bold text-ink">
+        <Sparkles size={14} className="text-moss" />
+        query processing
+      </div>
+      <div className="mt-3 space-y-2.5">
+        <QueryTextRow label="原话" value={processing.raw_query} />
+        <QueryTextRow label="实际检索句" value={processing.effective_query} />
+        <QueryTextRow
+          label="最终检索句"
+          value={processing.search_query}
+          emphasized={hasExpandedSearch}
+        />
+      </div>
+      <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-muted">
+        <span>改写耗时 {processing.rewrite_latency_ms}ms</span>
+        {processing.synonym_applied && (
+          <span>词表命中：{processing.synonym_expansions.join("、") || "已命中"}</span>
+        )}
+      </div>
+      {processing.degraded && (
+        <div className="mt-3 flex flex-wrap items-center gap-2 text-amber-700">
+          <TriangleAlert size={13} />
+          <span>改写失败，已用原话检索</span>
+          {processing.degraded_reason && <span>({processing.degraded_reason})</span>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function QueryTextRow({
+  label,
+  value,
+  emphasized = false,
+}: {
+  label: string;
+  value: string;
+  emphasized?: boolean;
+}) {
+  return (
+    <div className={`grid gap-1.5 sm:grid-cols-[88px_minmax(0,1fr)] sm:items-start sm:gap-3 ${emphasized ? "rounded-lg border border-ember/25 bg-ember/5 px-2.5 py-2" : ""}`}>
+      <span className="font-semibold text-muted">{label}</span>
+      <span className="break-words leading-5 text-ink">{value}</span>
+    </div>
   );
 }
 

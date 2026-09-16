@@ -1,3 +1,5 @@
+from typing import Any
+
 from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -11,12 +13,20 @@ class KnowledgeBaseRepository:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
-    async def create(self, *, tenant_id: str, name: str, description: str | None) -> KnowledgeBase:
+    async def create(
+        self,
+        *,
+        tenant_id: str,
+        name: str,
+        description: str | None,
+        settings: dict[str, Any] | None = None,
+    ) -> KnowledgeBase:
         knowledge_base = KnowledgeBase(
             id=generate_id(),
             tenant_id=tenant_id,
             name=name,
             description=description,
+            settings=dict(settings or {}),
         )
         self.session.add(knowledge_base)
         await self.session.flush()
@@ -29,6 +39,52 @@ class KnowledgeBaseRepository:
         )
         result = await self.session.execute(statement)
         return result.scalar_one_or_none()
+
+    async def get_settings(
+        self,
+        *,
+        kb_id: str,
+        tenant_id: str | None = None,
+    ) -> dict[str, Any] | None:
+        statement = select(KnowledgeBase).where(KnowledgeBase.id == kb_id)
+        if tenant_id is not None:
+            statement = statement.where(KnowledgeBase.tenant_id == tenant_id)
+        result = await self.session.execute(statement)
+        knowledge_base = result.scalar_one_or_none()
+        if knowledge_base is None:
+            return None
+        return dict(knowledge_base.settings or {})
+
+    async def update_settings(
+        self,
+        *,
+        kb_id: str,
+        settings: dict[str, Any],
+        tenant_id: str | None = None,
+    ) -> KnowledgeBase | None:
+        statement = select(KnowledgeBase).where(KnowledgeBase.id == kb_id)
+        if tenant_id is not None:
+            statement = statement.where(KnowledgeBase.tenant_id == tenant_id)
+        result = await self.session.execute(statement)
+        knowledge_base = result.scalar_one_or_none()
+        if knowledge_base is None:
+            return None
+        knowledge_base.settings = dict(settings)
+        await self.session.flush()
+        return knowledge_base
+
+    async def set_settings(
+        self,
+        *,
+        kb_id: str,
+        settings: dict[str, Any],
+        tenant_id: str | None = None,
+    ) -> KnowledgeBase | None:
+        return await self.update_settings(
+            kb_id=kb_id,
+            settings=settings,
+            tenant_id=tenant_id,
+        )
 
     async def list_tree(
         self, *, tenant_id: str, keyword: str | None = None
