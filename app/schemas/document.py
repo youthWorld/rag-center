@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from pydantic import BaseModel, Field, field_validator
 
 
@@ -20,3 +22,18 @@ class DocumentUploadResponse(BaseModel):
     kb_id: str
     status: int
     chunk_count: int
+
+
+class DocumentDetailResponse(BaseModel):
+    document_id: str
+    kb_id: str
+    title: str
+    status: int
+    error_message: str | None = None
+    chunk_count: int = Field(ge=0)
+    created_at: datetime
+    updated_at: datetime
+
+
+class DocumentDeleteResponse(BaseModel):
+    document_id: str

@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -17,6 +17,12 @@ class KnowledgeBaseCreateRequest(BaseModel):
         return value
 
 
+class KnowledgeBaseUpdateRequest(BaseModel):
+    name: str | None = Field(default=None, max_length=255)
+    description: str | None = Field(default=None, max_length=5000)
+    settings: Any = None
+
+
 class KnowledgeBaseResponse(BaseModel):
     kb_id: str
     name: str
@@ -24,10 +30,25 @@ class KnowledgeBaseResponse(BaseModel):
     created_at: datetime
 
 
+class KnowledgeBaseDetailResponse(BaseModel):
+    kb_id: str
+    name: str
+    description: str | None = None
+    settings: dict[str, Any]
+    document_count: int = Field(ge=0)
+    created_at: datetime
+    updated_at: datetime
+
+
+class KnowledgeBaseDeleteResponse(BaseModel):
+    kb_id: str
+
+
 class KnowledgeBaseTreeDocumentResponse(BaseModel):
     document_id: str
     title: str
-    status: Literal["SUCCESS"] = "SUCCESS"
+    status: Literal["SUCCESS", "FAILED", "PROCESSING"] = "SUCCESS"
+    error_message: str | None = None
     chunk_count: int = Field(ge=0)
     created_at: datetime
 

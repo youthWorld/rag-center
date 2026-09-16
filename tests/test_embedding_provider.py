@@ -44,3 +44,38 @@ async def test_embedding_request_includes_configured_dimension() -> None:
     await provider.embed_documents(["test document"])
 
     assert create.await_args.kwargs["dimensions"] == 1536
+
+
+@pytest.mark.asyncio
+async def test_embedding_provider_splits_document_batches() -> None:
+    provider = OpenAICompatibleEmbeddingProvider(
+        Settings(model_api_key="test-key", embedding_dimensions=3, embedding_batch_size=2)
+    )
+
+    async def create(**kwargs):
+        texts = kwargs["input"]
+        return SimpleNamespace(
+            data=[
+                SimpleNamespace(index=index, embedding=[float(index), 0.0, 0.0])
+                for index, _text in enumerate(texts)
+            ]
+        )
+
+    create_mock = AsyncMock(side_effect=create)
+    provider._client = SimpleNamespace(embeddings=SimpleNamespace(create=create_mock))
+
+    embeddings = await provider.embed_documents(["one", "two", "three", "four", "five"])
+
+    assert len(embeddings) == 5
+    assert [call.kwargs["input"] for call in create_mock.await_args_list] == [
+        ["one", "two"],
+        ["three", "four"],
+        ["five"],
+    ]
+    assert embeddings == [
+        [0.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0],
+        [0.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0],
+        [0.0, 0.0, 0.0],
+    ]

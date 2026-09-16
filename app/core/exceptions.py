@@ -100,6 +100,15 @@ class KnowledgeBaseNotFoundError(AppError):
         )
 
 
+class DocumentNotFoundError(AppError):
+    def __init__(self, document_id: str | None = None) -> None:
+        super().__init__(
+            "document not found",
+            code=ErrorCode.NOT_FOUND,
+            context={"document_id": document_id} if document_id else None,
+        )
+
+
 class DocumentIndexingError(AppError):
     def __init__(self, document_id: str, message: str) -> None:
         super().__init__(

@@ -18,10 +18,9 @@ from app.repositories.document_repository import DocumentRepository
 from app.repositories.knowledge_base_repository import KnowledgeBaseRepository
 from app.repositories.retrieval_log_repository import RetrievalLogRepository
 from app.services.document_service import DocumentService
-from app.services.indexing_service import IndexingService
+from app.services.indexing_service import IndexingService, build_indexing_service
 from app.services.knowledge_base_service import KnowledgeBaseService
 from app.services.rag_service import RagService
-from app.utils.text_splitter import TextSplitter
 
 
 def get_settings() -> Settings:
@@ -63,30 +62,29 @@ def get_keyword_search_provider(app_settings: Settings) -> KeywordSearchProvider
     )
 
 
+def get_indexing_service(
+    session: AsyncSession = Depends(get_db),
+    app_settings: Settings = Depends(get_settings),
+) -> IndexingService:
+    return build_indexing_service(session, app_settings)
+
+
 def get_knowledge_base_service(
     session: AsyncSession = Depends(get_db),
+    indexing_service: IndexingService = Depends(get_indexing_service),
 ) -> KnowledgeBaseService:
     return KnowledgeBaseService(
         session=session,
         repository=KnowledgeBaseRepository(session),
+        document_repository=DocumentRepository(session),
+        indexing_service=indexing_service,
     )
 
 
 def get_document_service(
     session: AsyncSession = Depends(get_db),
-    app_settings: Settings = Depends(get_settings),
+    indexing_service: IndexingService = Depends(get_indexing_service),
 ) -> DocumentService:
-    embedding_provider = OpenAICompatibleEmbeddingProvider(app_settings)
-    vector_store = PgVectorStore(session)
-    indexing_service = IndexingService(
-        splitter=TextSplitter(
-            chunk_size=app_settings.chunk_size,
-            chunk_overlap=app_settings.chunk_overlap,
-        ),
-        embedding_provider=embedding_provider,
-        vector_store=vector_store,
-        keyword_search_provider=get_keyword_search_provider(app_settings),
-    )
     return DocumentService(
         session=session,
         document_repository=DocumentRepository(session),

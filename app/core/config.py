@@ -1,5 +1,6 @@
 from functools import lru_cache
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -7,11 +8,19 @@ class Settings(BaseSettings):
     app_env: str = "local"
     auth_enabled: bool = True
     database_url: str = "postgresql+psycopg://postgres:postgres@localhost:5432/rag_center"
+    celery_broker_url: str = "redis://localhost:6379/0"
+    celery_result_backend: str = "redis://localhost:6379/1"
 
     model_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     model_api_key: str = ""
     embedding_model: str = "qwen3.7-text-embedding"
     embedding_dimensions: int = 1536
+    embedding_batch_size: int = Field(
+        default=20,
+        ge=1,
+        le=20,
+        description="Maximum number of document chunks sent per embedding request.",
+    )
 
     llm_provider: str = "openai_compatible"
     llm_base_url: str = "https://api.deepseek.com/v1"

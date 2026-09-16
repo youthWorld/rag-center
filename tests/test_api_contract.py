@@ -81,8 +81,11 @@ async def test_business_routes_are_exposed() -> None:
     assert sorted(app.openapi()["paths"]) == [
         "/api/v1/auth/me",
         "/api/v1/documents/upload",
+        "/api/v1/documents/{document_id}",
+        "/api/v1/documents/{document_id}/reindex",
         "/api/v1/knowledge-bases/create",
         "/api/v1/knowledge-bases/tree",
+        "/api/v1/knowledge-bases/{kb_id}",
         "/api/v1/rag/retrieve",
     ]
 

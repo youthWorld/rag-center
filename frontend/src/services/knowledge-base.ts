@@ -2,7 +2,10 @@ import { api, type ApiEnvelope } from "../lib/api";
 import type {
   DocumentUploadResponse,
   KnowledgeBase,
+  KnowledgeBaseDeleteResponse,
+  KnowledgeBaseDetailData,
   KnowledgeBaseTenantTree,
+  UpdateKnowledgeBaseRequest,
 } from "../types";
 
 export type CreateKnowledgeBasePayload = {
@@ -24,8 +27,33 @@ export async function fetchKnowledgeBaseTree(keyword?: string) {
   return response.data.data;
 }
 
+export async function fetchDetail(kbId: string) {
+  const response = await api.get<ApiEnvelope<KnowledgeBaseDetailData>>(
+    `/api/v1/knowledge-bases/${encodeURIComponent(kbId)}`,
+  );
+  return response.data.data;
+}
+
+export async function updateKnowledgeBase(kbId: string, payload: UpdateKnowledgeBaseRequest) {
+  const response = await api.patch<ApiEnvelope<KnowledgeBaseDetailData>>(
+    `/api/v1/knowledge-bases/${encodeURIComponent(kbId)}`,
+    payload,
+  );
+  return response.data.data;
+}
+
+export async function deleteKnowledgeBase(kbId: string) {
+  const response = await api.delete<ApiEnvelope<KnowledgeBaseDeleteResponse>>(
+    `/api/v1/knowledge-bases/${encodeURIComponent(kbId)}`,
+  );
+  return response.data.data;
+}
+
 export const knowledgeBaseService = {
   fetchTree: fetchKnowledgeBaseTree,
+  fetchDetail,
+  updateKnowledgeBase,
+  deleteKnowledgeBase,
 };
 
 export async function createKnowledgeBase(payload: CreateKnowledgeBasePayload) {

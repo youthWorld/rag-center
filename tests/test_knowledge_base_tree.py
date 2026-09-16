@@ -63,6 +63,7 @@ async def test_knowledge_base_service_groups_tree_rows_by_tenant_and_kb() -> Non
         "document_id": "doc-1",
         "title": "backend_engineer.md",
         "status": "SUCCESS",
+        "error_message": None,
         "chunk_count": 12,
         "created_at": created_at,
     }

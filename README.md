@@ -1,6 +1,6 @@
 # RAG Center
 
-RAG Center 是一个面向业务方提供统一 RAG 能力的后端中台骨架。当前实现知识库创建、文档同步索引，以及 pgvector 向量检索、Elasticsearch BM25 检索和 RRF 混合召回，保留各类 Provider 的扩展边界。
+RAG Center 是一个面向业务方提供统一 RAG 能力的后端中台骨架。当前实现知识库与文档生命周期管理、Celery 异步索引，以及 pgvector 向量检索、Elasticsearch BM25 检索和 RRF 混合召回，保留各类 Provider 的扩展边界。
 
 ## 技术栈
 
@@ -8,6 +8,7 @@ RAG Center 是一个面向业务方提供统一 RAG 能力的后端中台骨架�
 - FastAPI
 - PostgreSQL 16 + pgvector
 - Elasticsearch 8.17 + analysis-ik
+- Redis 7 + Celery
 - SQLAlchemy 2.x + Alembic
 - Pydantic v2
 - OpenAI-compatible Embedding Provider
@@ -23,7 +24,8 @@ app/
   db/                  SQLAlchemy 基础类和会话
   models/              知识库、文档、chunk、检索日志
   schemas/             Pydantic 请求和响应模型
-  services/            业务编排和同步索引流程
+  services/            业务编排和索引流程
+  tasks/               Celery 异步任务
   repositories/        数据库读写
   providers/           Embedding、DocumentParser、VectorStore 和 KeywordSearch 抽象及实现
   utils/               UUID 和文本切片工具
@@ -54,7 +56,7 @@ tests/                 自动化测试
 }
 ```
 
-### 上传文档并同步索引
+### 上传文档并异步索引
 
 `POST /api/v1/documents/upload`
 
@@ -66,7 +68,30 @@ tests/                 自动化测试
 }
 ```
 
-接口会同步完成文本切片、Embedding 生成，以及 pgvector 和 Elasticsearch 双写。返回状态值为 `1` 表示成功，`2` 表示失败，`3` 预留给后续异步索引。
+接口只负责校验知识库归属、保存原文并投递 Celery 任务，立即返回 `status=3`（PROCESSING）和 `chunk_count=0`。Worker 在后台完成文本切片、Embedding 生成，以及 pgvector 和 Elasticsearch 双写；状态值为 `1` 表示成功，`2` 表示失败。可以通过 `GET /api/v1/documents/{document_id}` 轮询状态。
+
+### 生命周期运维
+
+知识库支持详情、settings 整体替换和删除：
+
+- `GET /api/v1/knowledge-bases/{kb_id}`
+- `PATCH /api/v1/knowledge-bases/{kb_id}`
+- `DELETE /api/v1/knowledge-bases/{kb_id}`
+
+文档支持状态查询、删除和失败重试：
+
+- `GET /api/v1/documents/{document_id}`
+- `DELETE /api/v1/documents/{document_id}`
+- `POST /api/v1/documents/{document_id}/reindex`
+
+删除文档和重新索引文档时，会清理该文档在 pgvector 与 Elasticsearch 中的旧检索数据。`reindex` 只允许 FAILED 文档执行：它保留原文档记录和内容，清理旧 chunk，将状态改为 PROCESSING，再投递新的 Celery 索引任务。PROCESSING 文档不能删除或 reindex；包含 PROCESSING 文档的知识库不能删除。
+
+失败文档可以通过接口重新索引：
+
+```powershell
+curl.exe -s -X POST "http://127.0.0.1:8000/api/v1/documents/<document_id>/reindex" `
+  -H "Authorization: Bearer <api-key>"
+```
 
 ### RAG 检索增强
 
@@ -159,6 +184,70 @@ uv run python scripts/update_kb_settings.py `
 
 脚本示例文件见 `examples/kb_settings.example.json`。
 
+### Celery 任务运维
+
+以下三种操作都用于异步索引运维，但处理层级不同：
+
+| 操作 | 适用场景 | 是否清理该文档旧检索数据 | 任务消息 |
+| --- | --- | --- | --- |
+| `POST /documents/{document_id}/reindex` | 文档状态为 FAILED | 是 | 新建任务 |
+| `restore_celery_task.py restore` | 原消息仍在 Redis 未确认列表 | 否 | 恢复原消息 |
+| `index_document_task.delay(...)` | 文档为 PROCESSING 且原消息已丢失 | 否 | 新建任务 |
+
+#### 通过 reindex 接口重试失败文档
+
+文档状态为 `FAILED(2)` 时，优先使用业务接口重新索引。该接口会清理该文档在 PostgreSQL 和 Elasticsearch 中的旧检索数据，将状态改为 `PROCESSING(3)`，然后新建 Celery 索引任务：
+
+```powershell
+curl.exe -sS -X POST "http://127.0.0.1:8000/api/v1/documents/<document_id>/reindex" -H "Authorization: Bearer <api-key>"
+```
+
+接口返回后由 Worker 异步执行，完成后可通过文档状态接口确认结果。不要对 FAILED 文档直接调用 `.delay(...)`，也不要重新上传同一文档。
+
+#### 恢复未确认消息
+
+Celery Redis Broker 中仍处于未确认状态的任务可以先查看，再按 `delivery_tag` 精确恢复：
+
+```powershell
+# 查看当前所有未确认任务
+uv run python scripts/restore_celery_task.py list
+
+# 预览指定任务
+uv run python scripts/restore_celery_task.py inspect `
+  --delivery-tag <delivery_tag>
+
+# 校验任务类型和文档 ID 后恢复原消息
+uv run python scripts/restore_celery_task.py restore `
+  --delivery-tag <delivery_tag> `
+  --expected-task app.tasks.indexing.index_document_task `
+  --expected-document-id <document_id> `
+  --yes
+```
+
+恢复前应先停止正在运行的 Worker，避免原 Worker 与恢复后的消息并发处理同一文档。该脚本只操作 Broker 中的原始消息，不创建新任务、不修改数据库，也不清理 Result Backend。
+
+#### 直接新建任务
+
+如果任务已经被 Worker 确认、从 Redis 的未确认列表中消失，或者已经无法获得原来的 `delivery_tag`，则不能再使用上面的恢复脚本。确认原任务不会继续执行后，可以根据已有的 `document_id` 新建一条索引任务：
+
+```powershell
+# 先启动已包含最新代码的 Worker；Windows 本机建议使用 solo
+uv run celery -A app.celery_app worker --loglevel=info --pool=solo
+
+# 在另一个 PowerShell 窗口中按已有 document_id 重新投递
+uv run python -c "from app.tasks.indexing import index_document_task; print(index_document_task.delay('<document_id>').id)"
+```
+
+该命令只会向 Celery Broker 新建一条 `index_document_task` 消息，不会重新上传文档，也不会新建 `documents` 记录。任务会读取已有文档，完成切块、Embedding、pgvector 和 Elasticsearch 写入。重新投递前应确认文档仍为 `PROCESSING`，并确保原任务没有正在运行或等待可见性超时；否则可能出现同一文档被并发或重复索引。若文档已经是 `FAILED`，应优先调用上面的 `reindex` 接口，由业务流程清理旧检索数据并重新设置状态。
+
+#### 使用建议
+
+- 文档状态为 `FAILED(2)`：使用 `POST /documents/{document_id}/reindex`。它会清理该文档旧的 PostgreSQL chunk 和 Elasticsearch 文档，然后将状态改为 `PROCESSING(3)` 并创建新任务。
+- 文档状态为 `PROCESSING(3)`，且 `restore_celery_task.py list` 能看到对应未确认消息：使用 `inspect` 校验后执行 `restore`，不要再次调用 `.delay(...)`。
+- 文档状态为 `PROCESSING(3)`，原消息已经确认或丢失，且确认没有旧 Worker 正在执行：才使用 `.delay(...)` 新建任务。
+- 不要对 `SUCCESS(1)` 文档直接投递任务；任务入口会因状态不是 PROCESSING 而跳过。
+- 三种操作都不要重新上传文档；它们使用已有的 `document_id` 和 `documents.content`。
+
 ## 多用户鉴权
 
 默认开启多用户鉴权。客户端先创建租户和 API Key，再在请求头中携带 `Authorization: Bearer <api-key>` 调用业务接口：
@@ -200,7 +289,13 @@ API Key 只在创建命令中明文输出一次，数据库只保存 SHA-256 has
    uv run uvicorn app.main:app --reload
    ```
 
-当前开发模式下，Python、uv 和 FastAPI 都由本机环境管理；Docker 运行 PostgreSQL + pgvector 和 Elasticsearch。Elasticsearch 索引 mapping 使用 `analysis-ik` 提供的 `ik_max_word` 与 `ik_smart` 分词器。
+8. 启动 Celery Worker：
+
+   ```powershell
+   uv run celery -A app.celery_app worker --loglevel=info
+   ```
+
+当前开发模式下，Python、uv 和 FastAPI 都由本机环境管理；Docker 运行 PostgreSQL + pgvector、Elasticsearch 和 Redis。Elasticsearch 索引 mapping 使用 `analysis-ik` 提供的 `ik_max_word` 与 `ik_smart` 分词器。
 
 ## 测试和代码检查
 
@@ -210,6 +305,16 @@ uv run ruff check .
 ```
 
 测试通过依赖替身 Provider，不需要调用真实 Embedding 服务；真实接口调用仍需要配置 `MODEL_API_KEY` 和兼容的模型地址。
+
+### 真实依赖生命周期验收
+
+API、Docker 基础设施和 Celery Worker 均启动后，可以执行真实 API + PostgreSQL + Redis/Celery + pgvector + Elasticsearch 验收：
+
+```powershell
+uv run python scripts/run_lifecycle_integration.py
+```
+
+脚本会创建带唯一标记的临时租户、API Key、知识库和文档，验证文档/知识库生命周期、异步索引、检索清理和跨租户隔离，结束时通过 API 及数据库/Elasticsearch 复查并删除所有测试数据。已有 Worker 会被复用；没有 Worker 时脚本会临时启动 `--pool=solo` Worker，并在结束时停止它。
 
 ## 日志和错误码
 
@@ -293,7 +398,6 @@ uv run alembic upgrade head
 ## 后续扩展方向
 
 - 接入 Elasticsearch / OpenSearch，实现 BM25 混合检索。
-- 将 `IndexingService.index_document()` 迁移到 BackgroundTasks、Celery 或消息队列。
 - 增加 Milvus / Qdrant `VectorStore` 实现。
 - 增加权限 ACL 过滤。
 - 增加评测集和反馈闭环。
@@ -301,4 +405,4 @@ uv run alembic upgrade head
 
 ## 当前边界
 
-当前仍不包含多种文件格式解析、Elasticsearch / OpenSearch、复杂权限系统、评测系统、A/B 测试、多轮会话记忆以及 Redis / Celery 异步任务。
+当前仍不包含多种文件格式解析、OpenSearch、复杂权限系统、评测系统、A/B 测试和多轮会话记忆。

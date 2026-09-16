@@ -1,10 +1,10 @@
 from typing import Any
 
-from sqlalchemy import and_, func, select
+from sqlalchemy import and_, delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.chunk import Chunk
-from app.models.document import Document, DocumentStatus
+from app.models.document import Document
 from app.models.knowledge_base import KnowledgeBase
 from app.utils.id_generator import generate_id
 
@@ -39,6 +39,25 @@ class KnowledgeBaseRepository:
         )
         result = await self.session.execute(statement)
         return result.scalar_one_or_none()
+
+    async def get_by_id_and_tenant(self, *, kb_id: str, tenant_id: str) -> KnowledgeBase | None:
+        return await self.get_by_id(kb_id=kb_id, tenant_id=tenant_id)
+
+    async def count_documents(self, *, kb_id: str, tenant_id: str) -> int:
+        statement = select(func.count(Document.id)).where(
+            Document.kb_id == kb_id,
+            Document.tenant_id == tenant_id,
+        )
+        result = await self.session.execute(statement)
+        return int(result.scalar_one())
+
+    async def delete_by_id(self, *, kb_id: str, tenant_id: str) -> None:
+        statement = delete(KnowledgeBase).where(
+            KnowledgeBase.id == kb_id,
+            KnowledgeBase.tenant_id == tenant_id,
+        )
+        await self.session.execute(statement)
+        await self.session.flush()
 
     async def get_settings(
         self,
@@ -96,7 +115,6 @@ class KnowledgeBaseRepository:
                 and_(
                     Document.kb_id == KnowledgeBase.id,
                     Document.tenant_id == KnowledgeBase.tenant_id,
-                    Document.status == int(DocumentStatus.SUCCESS),
                 ),
             )
             .outerjoin(Chunk, Chunk.document_id == Document.id)

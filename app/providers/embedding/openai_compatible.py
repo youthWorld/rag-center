@@ -71,17 +71,14 @@ class OpenAICompatibleEmbeddingProvider(EmbeddingProvider):
     async def embed_documents(self, texts: list[str]) -> list[list[float]]:
         if not texts:
             return []
-        response = await self._create_embeddings(texts, operation="embed_documents")
-        if not response.data:
-            raise LLMServiceError(
-                code=ErrorCode.LLM_NO_RESPONSE,
-                internal_message="embedding API returned no data",
-                context={"operation": "embed_documents"},
-            )
-        return [
-            self._validate_dimensions(list(item.embedding))
-            for item in sorted(response.data, key=lambda item: item.index)
-        ]
+
+        embeddings: list[list[float]] = []
+        batch_size = self.settings.embedding_batch_size
+        for start in range(0, len(texts), batch_size):
+            batch = texts[start : start + batch_size]
+            response = await self._create_embeddings(batch, operation="embed_documents")
+            embeddings.extend(self._parse_document_embeddings(response, len(batch)))
+        return embeddings
 
     async def embed_query(self, query: str) -> list[float]:
         response = await self._create_embeddings(query, operation="embed_query")
@@ -92,3 +89,19 @@ class OpenAICompatibleEmbeddingProvider(EmbeddingProvider):
                 context={"operation": "embed_query"},
             )
         return self._validate_dimensions(list(response.data[0].embedding))
+
+    def _parse_document_embeddings(self, response, expected_count: int) -> list[list[float]]:
+        if not response.data:
+            raise LLMServiceError(
+                code=ErrorCode.LLM_NO_RESPONSE,
+                internal_message="embedding API returned no data",
+                context={"operation": "embed_documents"},
+            )
+
+        items = sorted(response.data, key=lambda item: item.index)
+        if len(items) != expected_count:
+            raise RuntimeError(
+                "embedding API returned an unexpected number of vectors: "
+                f"expected {expected_count}, got {len(items)}"
+            )
+        return [self._validate_dimensions(list(item.embedding)) for item in items]

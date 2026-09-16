@@ -7,8 +7,11 @@ from app.core.logging import log_api_call
 from app.schemas.common import APIResponse
 from app.schemas.knowledge_base import (
     KnowledgeBaseCreateRequest,
+    KnowledgeBaseDeleteResponse,
+    KnowledgeBaseDetailResponse,
     KnowledgeBaseResponse,
     KnowledgeBaseTenantTreeResponse,
+    KnowledgeBaseUpdateRequest,
 )
 from app.services.knowledge_base_service import KnowledgeBaseService
 
@@ -35,3 +38,36 @@ async def list_knowledge_base_tree(
     return APIResponse(
         data=await service.list_tree(tenant_id=tenant.tenant_id, keyword=keyword)
     )
+
+
+@router.get("/{kb_id}", response_model=APIResponse[KnowledgeBaseDetailResponse])
+@log_api_call
+async def get_knowledge_base(
+    kb_id: str,
+    tenant: TenantContext = Depends(get_current_tenant),
+    service: KnowledgeBaseService = Depends(get_knowledge_base_service),
+) -> APIResponse[KnowledgeBaseDetailResponse]:
+    return APIResponse(data=await service.get(kb_id, tenant_id=tenant.tenant_id))
+
+
+@router.patch("/{kb_id}", response_model=APIResponse[KnowledgeBaseDetailResponse])
+@log_api_call
+async def update_knowledge_base(
+    kb_id: str,
+    request: KnowledgeBaseUpdateRequest,
+    tenant: TenantContext = Depends(get_current_tenant),
+    service: KnowledgeBaseService = Depends(get_knowledge_base_service),
+) -> APIResponse[KnowledgeBaseDetailResponse]:
+    return APIResponse(
+        data=await service.update(kb_id, request, tenant_id=tenant.tenant_id)
+    )
+
+
+@router.delete("/{kb_id}", response_model=APIResponse[KnowledgeBaseDeleteResponse])
+@log_api_call
+async def delete_knowledge_base(
+    kb_id: str,
+    tenant: TenantContext = Depends(get_current_tenant),
+    service: KnowledgeBaseService = Depends(get_knowledge_base_service),
+) -> APIResponse[KnowledgeBaseDeleteResponse]:
+    return APIResponse(data=await service.delete(kb_id, tenant_id=tenant.tenant_id))

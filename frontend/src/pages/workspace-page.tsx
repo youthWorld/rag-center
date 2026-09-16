@@ -41,7 +41,7 @@ function statusLabel(state: UploadState) {
     case "uploading":
       return "处理中";
     case "success":
-      return "已完成";
+      return "已提交";
     case "error":
       return "失败";
     default:
@@ -185,7 +185,10 @@ export function WorkspacePage() {
           state: "success",
           documentId: response.document_id,
           chunkCount: response.chunk_count,
-          message: `已切分 ${response.chunk_count} 个片段`,
+          message:
+            response.status === 3
+              ? "已提交，正在后台索引"
+              : `已完成索引，共 ${response.chunk_count} 个片段`,
         });
       } catch (error) {
         updateUploadItem(item.id, {
@@ -195,7 +198,7 @@ export function WorkspacePage() {
       }
     }
     setIsUploading(false);
-    setToast(retryOnly ? "失败文件已重新处理" : "上传批次处理完成");
+    setToast(retryOnly ? "失败文件已重新提交，正在后台索引" : "上传批次已提交，正在后台索引");
   };
 
   const handleDrop = (event: React.DragEvent<HTMLDivElement>) => {
@@ -282,7 +285,7 @@ export function WorkspacePage() {
               <div className="flex flex-col justify-between gap-3 border-b border-line px-5 py-5 sm:flex-row sm:items-center sm:px-6">
                 <div>
                   <h2 className="text-base font-bold">上传文档</h2>
-                  <p className="mt-1 text-xs text-muted">文件会逐个提交，单个失败不会阻塞其他文件。</p>
+                  <p className="mt-1 text-xs text-muted">文件会逐个提交，收到响应即完成提交，索引在后台继续执行。</p>
                 </div>
                 <div className="flex items-center gap-2 text-xs font-semibold text-muted">
                   <span className="h-2 w-2 rounded-full bg-ember" />
@@ -373,7 +376,7 @@ export function WorkspacePage() {
                   <div>
                     <p className="text-sm font-bold">本批次文件</p>
                     <p className="mt-1 text-xs text-muted">
-                      {counts.total ? `${counts.success} 个成功 · ${counts.failed} 个失败 · ${counts.pending} 个待处理` : "添加文件后将在这里查看逐项结果"}
+                      {counts.total ? `${counts.success} 个已提交 · ${counts.failed} 个失败 · ${counts.pending} 个待处理` : "添加文件后将在这里查看逐项结果"}
                     </p>
                   </div>
                   {counts.success > 0 && (
@@ -454,16 +457,16 @@ export function WorkspacePage() {
                 </div>
                 <div className="mt-6 grid grid-cols-3 divide-x divide-line border-y border-line py-4">
                   <Stat label="总计" value={counts.total} />
-                  <Stat label="成功" value={counts.success} tone="success" />
+                  <Stat label="已提交" value={counts.success} tone="success" />
                   <Stat label="失败" value={counts.failed} tone="danger" />
                 </div>
                 <div className="mt-5 flex items-center justify-between text-xs font-semibold text-muted">
-                  <span>完成度</span>
+                  <span>提交度</span>
                   <span className="text-ink">{Math.round(progress)}%</span>
                 </div>
                 <Progress className="mt-2" value={progress} />
                 <p className="mt-4 text-xs leading-5 text-muted">
-                  每个文件完成索引后会单独反馈结果。失败项可以在本批次内重新尝试。
+                  每个文件收到 PROCESSING 响应后即算提交成功，最终索引状态请到知识库列表查看。失败项可以在本批次内重新尝试。
                 </p>
               </section>
 

@@ -5,10 +5,15 @@ export type KnowledgeBase = {
   created_at: string;
 };
 
+export type DocumentStatusCode = 1 | 2 | 3;
+
+export type DocumentStatus = "SUCCESS" | "FAILED" | "PROCESSING";
+
 export type KnowledgeBaseTreeDocument = {
   document_id: string;
   title: string;
-  status: "SUCCESS";
+  status: DocumentStatus;
+  error_message: string | null;
   chunk_count: number;
   created_at: string;
 };
@@ -19,6 +24,22 @@ export type KnowledgeBaseTreeItem = {
   description?: string | null;
   created_at: string;
   documents: KnowledgeBaseTreeDocument[];
+};
+
+export type KnowledgeBaseDetailData = {
+  kb_id: string;
+  name: string;
+  description: string | null;
+  settings: Record<string, unknown>;
+  document_count: number;
+  created_at: string;
+  updated_at: string;
+};
+
+export type UpdateKnowledgeBaseRequest = {
+  name?: string;
+  description?: string | null;
+  settings?: Record<string, unknown>;
 };
 
 export type KnowledgeBaseTenantTree = {
@@ -36,8 +57,16 @@ export type AuthMeData = {
 export type DocumentUploadResponse = {
   document_id: string;
   kb_id: string;
-  status: number;
+  status: DocumentStatusCode;
   chunk_count: number;
+};
+
+export type KnowledgeBaseDeleteResponse = {
+  kb_id: string;
+};
+
+export type DocumentDeleteResponse = {
+  document_id: string;
 };
 
 export type UploadState = "queued" | "uploading" | "success" | "error";
