@@ -21,6 +21,7 @@ from app.repositories.knowledge_base_repository import KnowledgeBaseRepository
 from app.repositories.retrieval_log_repository import RetrievalLogRepository
 from app.repositories.tenant_repository import TenantRepository
 from app.services.document_service import DocumentService
+from app.services.feedback_service import FeedbackService
 from app.services.indexing_service import IndexingService, build_indexing_service
 from app.services.knowledge_base_service import KnowledgeBaseService
 from app.services.quota_service import QuotaService
@@ -156,4 +157,14 @@ def get_rag_service(
                 timeout_ms=app_settings.query_rewrite_timeout_ms,
             ),
         ),
+    )
+
+
+def get_feedback_service(
+    session: AsyncSession = Depends(get_db),
+    app_settings: Settings = Depends(get_settings),
+) -> FeedbackService:
+    return FeedbackService(
+        settings=app_settings,
+        retrieval_log_repository=RetrievalLogRepository(session),
     )

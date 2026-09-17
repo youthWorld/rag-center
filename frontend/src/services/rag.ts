@@ -1,5 +1,7 @@
 import { api, type ApiEnvelope } from "../lib/api";
 import type {
+  FeedbackData,
+  FeedbackRequest,
   RagRetrieveResponse,
   QueryOptions,
   RetrieveProfile,
@@ -26,4 +28,12 @@ async function retrieve(payload: RetrievePayload) {
   return response.data.data;
 }
 
-export const ragService = { retrieve };
+async function submitFeedback(payload: FeedbackRequest) {
+  const response = await api.post<ApiEnvelope<FeedbackData>>(
+    "/api/v1/rag/feedback",
+    payload,
+  );
+  return response.data.data;
+}
+
+export const ragService = { retrieve, submitFeedback };

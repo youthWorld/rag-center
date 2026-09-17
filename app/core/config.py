@@ -11,6 +11,11 @@ class Settings(BaseSettings):
     celery_broker_url: str = "redis://localhost:6379/0"
     celery_result_backend: str = "redis://localhost:6379/1"
 
+    langfuse_enabled: bool = False
+    langfuse_host: str = "http://localhost:3000"
+    langfuse_public_key: str = ""
+    langfuse_secret_key: str = ""
+
     model_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     model_api_key: str = ""
     embedding_model: str = "qwen3.7-text-embedding"

@@ -19,6 +19,10 @@ _DEFAULT_STATUS_CODES = {
     ErrorCode.REQUEST_VALIDATION_ERROR: 400,
     ErrorCode.FEATURE_NOT_ALLOWED: 403,
     ErrorCode.QUOTA_EXCEEDED: 429,
+    ErrorCode.FEEDBACK_UNAVAILABLE: 502,
+    ErrorCode.FEEDBACK_LOG_MISMATCH: 400,
+    ErrorCode.FEEDBACK_SCORE_INVALID: 400,
+    ErrorCode.FEEDBACK_ALREADY_SUBMITTED: 409,
     ErrorCode.DB_ERROR: 500,
     ErrorCode.DATA_DUPLICATE: 409,
     ErrorCode.STORAGE_NOT_FOUND: 404,
@@ -146,6 +150,29 @@ class ServiceConfigurationError(AppError):
             internal_message=internal_message,
             context=context,
         )
+
+
+class FeedbackUnavailableError(AppError):
+    def __init__(self, *, internal_message: str | None = None) -> None:
+        super().__init__(
+            code=ErrorCode.FEEDBACK_UNAVAILABLE,
+            internal_message=internal_message,
+        )
+
+
+class FeedbackLogMismatchError(AppError):
+    def __init__(self) -> None:
+        super().__init__(code=ErrorCode.FEEDBACK_LOG_MISMATCH)
+
+
+class FeedbackScoreInvalidError(AppError):
+    def __init__(self) -> None:
+        super().__init__(code=ErrorCode.FEEDBACK_SCORE_INVALID)
+
+
+class FeedbackAlreadySubmittedError(AppError):
+    def __init__(self) -> None:
+        super().__init__(code=ErrorCode.FEEDBACK_ALREADY_SUBMITTED)
 
 
 def map_llm_exception(

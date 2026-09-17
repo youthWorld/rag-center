@@ -1,6 +1,7 @@
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
+from typing_extensions import TypedDict
 
 from app.schemas.hybrid_search import RetrievalOptions, RetrievalSource
 from app.schemas.rerank import RerankOptions
@@ -47,8 +48,20 @@ class RetrievedChunk(BaseModel):
     rerank_score: float | None = None
 
 
+class RetrieveMetadata(TypedDict, total=False):
+    log_id: str
+    trace_id: str | None
+    top_k: int
+    latency_ms: int
+    vector_store: str
+    query_processing: dict[str, Any] | None
+    retrieval: dict[str, Any]
+    rerank: dict[str, Any]
+    tenant_policy: dict[str, Any]
+
+
 class RagRetrieveResponse(BaseModel):
     query: str
     kb_id: str
     retrieved_chunks: list[RetrievedChunk]
-    metadata: dict[str, Any]
+    metadata: RetrieveMetadata

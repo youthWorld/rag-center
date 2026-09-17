@@ -110,6 +110,19 @@ uv run python scripts/update_kb_settings.py `
 
 词表在 query 处理阶段使用，不受套餐的 `query_rewrite_allowed` 开关影响。`query_rewrite_allowed` 控制的是 LLM query 改写。
 
+## 检索反馈
+
+开启 Langfuse 后，`retrieve` 响应会返回 `metadata.log_id` 和 `metadata.trace_id`。业务方应保存本次检索的 `trace_id`，需要反馈时调用反馈接口提交 1～5 分和可选备注：
+
+```powershell
+curl.exe -s -X POST "http://127.0.0.1:8000/api/v1/rag/feedback" `
+  -H "Authorization: Bearer <api-key>" `
+  -H "Content-Type: application/json" `
+  -d '{"trace_id":"<trace-id>","log_id":"<log-id>","score":2,"comment":"排第一的 chunk 不是目标文档"}'
+```
+
+反馈会以 `user_feedback` score 写入对应的 Langfuse trace。同一条 trace 只接受一次反馈，重复提交会返回 HTTP 409、错误码 `20023`。运营可以在 Langfuse 按 `user_feedback` 筛选低分 trace，复盘 query 改写、召回和 rerank 的效果。
+
 ## 常见错误码
 
 | code | 含义 | 处理方式 |
@@ -118,6 +131,10 @@ uv run python scripts/update_kb_settings.py `
 | `20013` | 功能超出套餐 | 根据 `/auth/me` 的 features 更换 profile 或升级套餐。 |
 | `20014` | 配额超限 | 检查 `limits` 和 `usage`，减少知识库、文档或当天检索量，或升级套餐。页面会展示响应中的 `msg`。 |
 | `20005` | QPS 限流 | 降低并发或增加请求间隔。 |
+| `20020` | 反馈不可用 | 检查 Langfuse 是否启动、配置是否完整。 |
+| `20021` | 检索日志与 trace 不匹配 | 确认 `log_id`、`trace_id` 来自同一次检索且属于当前租户。 |
+| `20022` | 反馈分数无效 | `score` 必须是 1～5 的整数。 |
+| `20023` | 反馈已提交 | 同一条检索只能提交一次反馈。 |
 
 错误响应统一包含 `code`、`msg` 和 `data`，例如：
 

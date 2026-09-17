@@ -7,8 +7,10 @@ import {
   Gauge,
   LoaderCircle,
   Search,
+  Send,
   SlidersHorizontal,
   Sparkles,
+  Star,
   TriangleAlert,
 } from "lucide-react";
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
@@ -16,6 +18,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useSearchParams } from "react-router-dom";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
+import { Card } from "../components/ui/card";
 import { HelpTooltip } from "../components/ui/help-tooltip";
 import { Input } from "../components/ui/input";
 import { Textarea } from "../components/ui/textarea";
@@ -61,6 +64,12 @@ export function RetrievePage() {
   const [result, setResult] = useState<RagRetrieveResponse | null>(null);
   const [isRunning, setIsRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [feedbackScore, setFeedbackScore] = useState<number | null>(null);
+  const [feedbackComment, setFeedbackComment] = useState("");
+  const [feedbackMessage, setFeedbackMessage] = useState<string | null>(null);
+  const [feedbackError, setFeedbackError] = useState<string | null>(null);
+  const [isSubmittingFeedback, setIsSubmittingFeedback] = useState(false);
+  const [feedbackSubmitted, setFeedbackSubmitted] = useState(false);
 
   const authQuery = useQuery<AuthMeData>({
     queryKey: ["auth-me"],
@@ -154,6 +163,11 @@ export function RetrievePage() {
     }
 
     setResult(null);
+    setFeedbackScore(null);
+    setFeedbackComment("");
+    setFeedbackMessage(null);
+    setFeedbackError(null);
+    setFeedbackSubmitted(false);
     setIsRunning(true);
     try {
       setResult(await ragService.retrieve(payload));
@@ -365,7 +379,7 @@ export function RetrievePage() {
         </div>
       </details>
 
-      <section className="rounded-2xl border border-line bg-white shadow-soft">
+      <Card>
         <div className="border-b border-line px-5 py-5 sm:px-6">
           <div className="flex items-start gap-3">
             <div className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-[#fff3df] text-ember">
@@ -394,6 +408,57 @@ export function RetrievePage() {
             </Button>
           </div>
         </form>
+
+        {result?.metadata.trace_id ? (
+          <FeedbackPanel
+            score={feedbackScore}
+            comment={feedbackComment}
+            message={feedbackMessage}
+            error={feedbackError}
+            isSubmitting={isSubmittingFeedback}
+            submitted={feedbackSubmitted}
+            onScoreChange={(value) => {
+              setFeedbackScore(value);
+              setFeedbackMessage(null);
+              setFeedbackError(null);
+            }}
+            onCommentChange={(value) => {
+              setFeedbackComment(value);
+              setFeedbackMessage(null);
+              setFeedbackError(null);
+            }}
+            onSubmit={async () => {
+              if (!feedbackScore) {
+                setFeedbackError("请先选择 1～5 分。");
+                return;
+              }
+              const traceId = result.metadata.trace_id;
+              if (!traceId) return;
+              setIsSubmittingFeedback(true);
+              setFeedbackMessage(null);
+              setFeedbackError(null);
+              try {
+                const payload = {
+                  trace_id: traceId,
+                  score: feedbackScore,
+                  ...(result.metadata.log_id ? { log_id: result.metadata.log_id } : {}),
+                  ...(feedbackComment.trim() ? { comment: feedbackComment.trim() } : {}),
+                };
+                await ragService.submitFeedback(payload);
+                setFeedbackMessage(`已提交，已评 ${feedbackScore} 分`);
+                setFeedbackSubmitted(true);
+              } catch (requestError) {
+                setFeedbackError(getApiErrorMessage(requestError));
+              } finally {
+                setIsSubmittingFeedback(false);
+              }
+            }}
+          />
+        ) : result ? (
+          <div className="border-t border-line px-5 py-4 text-xs text-muted sm:px-6">
+            Langfuse 未启用，反馈暂不可用。
+          </div>
+        ) : null}
 
         <div className="border-t border-line px-5 py-5 sm:px-6">
           <div className="flex items-center justify-between gap-3">
@@ -425,7 +490,7 @@ export function RetrievePage() {
             </div>
           )}
         </div>
-      </section>
+      </Card>
 
       <RunSummary result={result} isRunning={isRunning} />
     </div>
@@ -453,6 +518,79 @@ function RetrievalLoadingState() {
         <div className="h-2 w-4/5 animate-pulse rounded-full bg-moss/10" />
         <div className="h-2 w-2/3 animate-pulse rounded-full bg-moss/10" />
       </div>
+    </div>
+  );
+}
+
+function FeedbackPanel({
+  score,
+  comment,
+  message,
+  error,
+  isSubmitting,
+  submitted,
+  onScoreChange,
+  onCommentChange,
+  onSubmit,
+}: {
+  score: number | null;
+  comment: string;
+  message: string | null;
+  error: string | null;
+  isSubmitting: boolean;
+  submitted: boolean;
+  onScoreChange: (score: number) => void;
+  onCommentChange: (comment: string) => void;
+  onSubmit: () => Promise<void>;
+}) {
+  return (
+    <div className="border-t border-line bg-paper/45 px-5 py-5 sm:px-6">
+      <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-start">
+        <div>
+          <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-muted">检索反馈</p>
+          <p className="mt-1 text-xs text-muted">评分会挂到本次检索的 Langfuse trace。</p>
+        </div>
+        <div role="radiogroup" aria-label="检索反馈评分" className="flex items-center gap-1">
+          {[1, 2, 3, 4, 5].map((value) => {
+            const active = score !== null && value <= score;
+            return (
+              <button
+                key={value}
+                type="button"
+                role="radio"
+                aria-checked={score === value}
+                aria-label={`${value} 分`}
+                title={`${value} 分`}
+                disabled={isSubmitting || submitted}
+                onClick={() => onScoreChange(value)}
+                className={`grid h-9 w-9 place-items-center rounded-lg transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+                  active
+                    ? "text-amber-400 hover:bg-amber-50"
+                    : "text-muted/45 hover:bg-ink/5 hover:text-muted"
+                }`}
+              >
+                <Star size={23} fill={active ? "currentColor" : "transparent"} strokeWidth={1.8} />
+              </button>
+            );
+          })}
+        </div>
+      </div>
+      <div className="mt-4 grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
+        <Textarea
+          value={comment}
+          onChange={(event) => onCommentChange(event.target.value)}
+          placeholder="备注（可选），例如：排第三的 chunk 才是对的"
+          className="min-h-[88px] bg-white"
+          maxLength={2000}
+          disabled={isSubmitting || submitted}
+        />
+        <Button type="button" size="sm" disabled={isSubmitting || submitted} onClick={onSubmit}>
+          {isSubmitting ? <LoaderCircle size={15} className="animate-spin" /> : submitted ? <CheckCircle2 size={15} /> : <Send size={15} />}
+          {isSubmitting ? "提交中..." : submitted ? "已提交" : "提交反馈"}
+        </Button>
+      </div>
+      {message && <p className="mt-3 text-xs font-semibold text-moss" role="status">{message}</p>}
+      {error && <p className="mt-3 text-xs font-semibold text-danger" role="alert">{error}</p>}
     </div>
   );
 }

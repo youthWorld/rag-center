@@ -52,6 +52,18 @@ def create_app() -> FastAPI:
         request: Request, exc: RequestValidationError
     ) -> JSONResponse:
         errors = _serialize_validation_errors(exc.errors())
+        if request.url.path == "/api/v1/rag/feedback" and _has_feedback_score_range_error(
+            exc.errors()
+        ):
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "code": ErrorCode.FEEDBACK_SCORE_INVALID.code,
+                    "msg": ErrorCode.FEEDBACK_SCORE_INVALID.message,
+                    "data": None,
+                },
+                headers={"X-Request-ID": getattr(request.state, "request_id", "-")},
+            )
         logger.warning(
             "REQUEST_VALIDATION_ERROR | url=%s | errors=%s",
             request.url,
@@ -131,6 +143,20 @@ def _serialize_validation_errors(errors: list[dict[str, Any]]) -> list[dict[str,
         }
         for error in errors
     ]
+
+
+def _has_feedback_score_range_error(errors: list[dict[str, Any]]) -> bool:
+    range_error_types = {
+        "greater_than",
+        "greater_than_equal",
+        "less_than",
+        "less_than_equal",
+    }
+    return any(
+        error.get("type") in range_error_types
+        and list(error.get("loc", []))[-1:] == ["score"]
+        for error in errors
+    )
 
 
 app = create_app()

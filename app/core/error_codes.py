@@ -22,6 +22,10 @@ class ErrorCode(Enum):
     REQUEST_VALIDATION_ERROR = (20004, "request validation failed")
     FEATURE_NOT_ALLOWED = (20013, "feature is not allowed for this plan")
     QUOTA_EXCEEDED = (20014, "quota exceeded")
+    FEEDBACK_UNAVAILABLE = (20020, "feedback service is unavailable")
+    FEEDBACK_LOG_MISMATCH = (20021, "log_id and trace_id do not match")
+    FEEDBACK_SCORE_INVALID = (20022, "score must be between 1 and 5")
+    FEEDBACK_ALREADY_SUBMITTED = (20023, "feedback already submitted for this trace")
 
     # Database and storage errors.
     DB_ERROR = (30001, "database operation failed")

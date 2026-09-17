@@ -12,6 +12,7 @@ from app.core.exceptions import (
     raise_app_error,
 )
 from app.core.logging import get_logger
+from app.observability.langfuse_client import RetrieveObservability
 from app.providers.embedding.base import EmbeddingProvider
 from app.providers.keyword_search.base import KeywordSearchProvider
 from app.providers.query.pipeline import QueryPipeline
@@ -26,6 +27,7 @@ from app.services.hybrid_search_service import HybridSearchService
 from app.services.rate_limit_service import RateLimitService
 from app.tenant.plan_resolver import PlanContext, PlanResolver
 from app.tenant.retrieve_presets import expand_retrieve_profile
+from app.utils.id_generator import generate_id
 
 
 class RagService:
@@ -103,6 +105,42 @@ class RagService:
             rerank_enabled=rerank_enabled,
             query_rewrite_enabled=query_rewrite_enabled,
         )
+
+        observability = RetrieveObservability(
+            settings=self.settings,
+            tenant_id=tenant_id,
+            kb_id=request.kb_id,
+            user_id=request.user_id,
+            profile=profile,
+            plan=plan.plan,
+            raw_query=request.query,
+        )
+        with observability:
+            return await self._retrieve(
+                request,
+                tenant_id=tenant_id,
+                plan=plan,
+                profile=profile,
+                effective_request=effective_request,
+                mode=mode,
+                rerank_enabled=rerank_enabled,
+                query_rewrite_enabled=query_rewrite_enabled,
+                observability=observability,
+            )
+
+    async def _retrieve(
+        self,
+        request: RagRetrieveRequest,
+        *,
+        tenant_id: str,
+        plan: PlanContext,
+        profile: str,
+        effective_request: RagRetrieveRequest,
+        mode: RetrievalMode,
+        rerank_enabled: bool,
+        query_rewrite_enabled: bool,
+        observability: RetrieveObservability,
+    ) -> RagRetrieveResponse:
         if self.rate_limit_service is not None:
             await self.rate_limit_service.check_retrieve(tenant_id, plan)
 
@@ -119,6 +157,15 @@ class RagService:
             query_options=effective_request.query_options,
         )
         search_query = query_processing.search_query
+        observability.record_query_processing(
+            effective_query=query_processing.effective_query,
+            search_query=search_query,
+            rewrite_latency_ms=query_processing.rewrite_latency_ms,
+            synonym_applied=query_processing.synonym_applied,
+            synonym_expansions=query_processing.synonym_expansions,
+            degraded=query_processing.degraded,
+            degraded_reason=query_processing.degraded_reason,
+        )
         started_at = time.perf_counter()
         vector_top_k, bm25_top_k, top_k, rrf_k = self._resolve_retrieval_options(
             effective_request,
@@ -246,6 +293,15 @@ class RagService:
             )
 
         retrieved = retrieved[:top_k]
+        observability.record_retrieval(
+            search_query=search_query,
+            mode=mode,
+            vector_count=len(vector_results),
+            bm25_count=len(bm25_results),
+            fused_count=fused_count,
+            degraded=retrieval_degraded,
+            degraded_reason=degraded_reason,
+        )
 
         rerank_top_n = self._resolve_rerank_top_n(effective_request)
         candidate_count = 0
@@ -272,6 +328,13 @@ class RagService:
                     candidate_count,
                     rerank_error,
                 )
+
+        observability.record_rerank(
+            enabled=rerank_enabled,
+            candidate_count=candidate_count,
+            degraded=rerank_degraded,
+            error=rerank_error,
+        )
 
         latency_ms = int((time.perf_counter() - started_at) * 1000)
         response_chunks = (
@@ -300,17 +363,24 @@ class RagService:
             for item in response_chunks
         ]
         serialized_chunks = [chunk.model_dump() for chunk in retrieved_chunks]
-        await self.retrieval_log_repository.create(
+        retrieval_log = await self.retrieval_log_repository.create(
             tenant_id=tenant_id,
             kb_id=knowledge_base.id,
             user_id=request.user_id,
             query=request.query,
+            trace_id=observability.trace_id,
+            profile=profile,
+            search_query=search_query,
+            effective_query=query_processing.effective_query,
             retrieved_chunks=serialized_chunks,
             top_k=top_k,
             vector_store=self.settings.vector_store,
             latency_ms=latency_ms,
         )
+        raw_log_id = getattr(retrieval_log, "id", None)
+        log_id = raw_log_id if isinstance(raw_log_id, str) and raw_log_id else generate_id()
         await self.session.commit()
+        observability.finish(log_id=log_id, chunks=serialized_chunks)
         if self.rate_limit_service is not None:
             await self.rate_limit_service.record_retrieve_success(tenant_id)
         self.logger.info(
@@ -336,6 +406,8 @@ class RagService:
             kb_id=knowledge_base.id,
             retrieved_chunks=retrieved_chunks,
             metadata={
+                "log_id": log_id,
+                "trace_id": observability.trace_id,
                 "top_k": top_k,
                 "latency_ms": latency_ms,
                 "vector_store": self.settings.vector_store,

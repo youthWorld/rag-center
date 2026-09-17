@@ -150,6 +150,8 @@ export type RetrievedChunk = {
 };
 
 export type RetrievalMetadata = {
+  log_id?: string;
+  trace_id?: string | null;
   top_k?: number;
   latency_ms?: number;
   vector_store?: string;
@@ -191,4 +193,18 @@ export type RagRetrieveResponse = {
   kb_id: string;
   retrieved_chunks: RetrievedChunk[];
   metadata: RetrievalMetadata;
+};
+
+export type FeedbackRequest = {
+  trace_id: string;
+  log_id?: string;
+  score: number;
+  comment?: string;
+};
+
+export type FeedbackData = {
+  feedback_id: string;
+  trace_id: string;
+  log_id?: string | null;
+  score: number;
 };
