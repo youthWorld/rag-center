@@ -30,8 +30,72 @@ app/
   providers/           Embedding、DocumentParser、VectorStore 和 KeywordSearch 抽象及实现
   utils/               UUID 和文本切片工具
 migrations/            Alembic 迁移
+eval/                  离线检索评测数据集和报告目录
 tests/                 自动化测试
 ```
+
+## 离线检索测评
+
+离线测评从 Langfuse 的低分反馈生成候选 case，人工补充 `ground_truth` 后重新调用
+`retrieve`，再用 RAGAS 计算 `context_precision` 和 `context_recall`。评测脚本独立运行，
+不会创建数据库表，也不会嵌入 FastAPI。
+
+先安装评测依赖：
+
+```powershell
+uv sync --extra eval
+```
+
+### 1. 导出 Langfuse 低分 case
+
+脚本读取 `.env` 中的 `LANGFUSE_HOST`、`LANGFUSE_PUBLIC_KEY` 和 `LANGFUSE_SECRET_KEY`，
+默认导出 `user_feedback` 分值低于 3 的记录。访问 Langfuse 时会关闭系统代理，适配本地
+`localhost` 服务：
+
+```powershell
+uv run python scripts/export_eval_cases_from_langfuse.py `
+  --max-score 3 `
+  --days 30 `
+  --kb-id <knowledge-base-id> `
+  --output eval/datasets/imported_from_feedback.json
+```
+
+导出的 `ground_truth` 为空，需要人工根据知识库原文补齐。审核后可以合并到主集；合并按
+`question` 去重，不会覆盖已有的 `ground_truth`：
+
+```powershell
+uv run python scripts/export_eval_cases_from_langfuse.py `
+  --max-score 3 `
+  --merge eval/datasets/ecommerce_retrieval.json `
+  --output eval/datasets/ecommerce_retrieval.json
+```
+
+### 2. 运行 RAGAS 检索评测
+
+`run_retrieval_eval.py` 对每个有效 case 重新调用 `POST /api/v1/rag/retrieve`，并固定使用
+`user_id=eval_runner`。RAGAS 评测阶段复用 `.env` 中的 `MODEL_BASE_URL`、`MODEL_API_KEY`；
+必要时可同时配置现有的 `LLM_MODEL` 作为评测模型名。
+
+```powershell
+uv run python scripts/run_retrieval_eval.py `
+  --dataset eval/datasets/ecommerce_retrieval.json `
+  --api-key rk_live_你的key `
+  --profile balanced `
+  --output eval/reports/balanced.json
+```
+
+没有 `ground_truth` 的 case 会自动跳过并在终端提示。可以对同一数据集分别运行多个 profile，
+或者在调整词表、重排和 query 改写配置前后分别输出报告：
+
+```powershell
+uv run python scripts/run_retrieval_eval.py --dataset <dataset> --api-key <api-key> `
+  --profile balanced --output eval/reports/before_synonyms.json
+uv run python scripts/run_retrieval_eval.py --dataset <dataset> --api-key <api-key> `
+  --profile balanced --output eval/reports/after_synonyms.json
+```
+
+`eval/datasets/_seed_ecommerce.json` 和 `eval/datasets/ecommerce_retrieval.json` 使用占位
+`kb_id`，接入真实知识库前请替换为实际 ID。`eval/reports/` 下的评测报告已加入 `.gitignore`。
 
 ## 三个核心接口
 

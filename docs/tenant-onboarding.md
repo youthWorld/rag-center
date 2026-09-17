@@ -123,6 +123,15 @@ curl.exe -s -X POST "http://127.0.0.1:8000/api/v1/rag/feedback" `
 
 反馈会以 `user_feedback` score 写入对应的 Langfuse trace。同一条 trace 只接受一次反馈，重复提交会返回 HTTP 409、错误码 `20023`。运营可以在 Langfuse 按 `user_feedback` 筛选低分 trace，复盘 query 改写、召回和 rerank 的效果。
 
+## 离线检索测评
+
+可以使用仓库中的 [`eval/`](../eval/) 目录搭建检索调优闭环：先从 Langfuse 导出低分反馈，
+再人工补齐 `ground_truth`，最后调用 `scripts/run_retrieval_eval.py` 重新检索并计算
+`context_precision`、`context_recall`。完整命令和数据集格式见根目录 README 的「离线检索测评」小节。
+
+评测请求固定使用 `user_id=eval_runner`，因此可以在 Langfuse 中和线上检索流量区分；评测报告
+写入 `eval/reports/`，不会进入版本库。
+
 ## 常见错误码
 
 | code | 含义 | 处理方式 |

@@ -19,6 +19,14 @@ dependencies = [
     "uvicorn[standard]>=0.34,<1.0",
 ]
 
+[project.optional-dependencies]
+eval = [
+    "ragas>=0.2.0",
+    "datasets>=2.0.0",
+    # RAGAS imports VertexAI from this compatibility path during startup.
+    "langchain-community<0.4.0",
+]
+
 [dependency-groups]
 dev = [
     "aiosqlite>=0.20,<1.0",

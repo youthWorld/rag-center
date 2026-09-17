@@ -1,0 +1,63 @@
+{
+  "name": "_seed_ecommerce",
+  "kb_id": "939a5baf-xxxx",
+  "default_profile": "balanced",
+  "cases": [
+    {
+      "id": "seed_refund_unused",
+      "question": "什么情况下可以申请全额退款？",
+      "ground_truth": "用户支付订单后，未激活、未使用对应产品、权益及服务，可申请全额退款。",
+      "source": {
+        "origin": "data/退款政策.md"
+      }
+    },
+    {
+      "id": "seed_refund_review_time",
+      "question": "退款审核需要多长时间？",
+      "ground_truth": "平台工作人员将在1-3个工作日内对退款申请进行核实、审核。",
+      "source": {
+        "origin": "data/退款政策.md"
+      }
+    },
+    {
+      "id": "seed_refund_arrival_time",
+      "question": "审核通过后退款多久到账？",
+      "ground_truth": "退款到账时间以对应支付渠道规则为准，一般1-7个工作日。",
+      "source": {
+        "origin": "data/退款政策.md"
+      }
+    },
+    {
+      "id": "seed_refund_discount",
+      "question": "优惠券抵扣的金额会退吗？",
+      "ground_truth": "退款时仅退还用户实际支付金额，优惠部分不予折现、不退换。",
+      "source": {
+        "origin": "data/退款政策.md"
+      }
+    },
+    {
+      "id": "seed_refund_used_service",
+      "question": "使用过服务后还能申请退款吗？",
+      "ground_truth": "用户已激活、使用、体验对应服务或产品权益，产生有效使用记录的，不予退款。",
+      "source": {
+        "origin": "data/退款政策.md"
+      }
+    },
+    {
+      "id": "seed_refund_original_path",
+      "question": "可以把退款打到其他账户吗？",
+      "ground_truth": "所有退款均按照原支付路径原路退回，不支持更换退款账户、线下转账等其他方式。",
+      "source": {
+        "origin": "data/退款政策.md"
+      }
+    },
+    {
+      "id": "seed_refund_partial_use",
+      "question": "部分使用的服务如何退款？",
+      "ground_truth": "平台将根据实际使用时长、功能消耗情况，进行比例部分退款。",
+      "source": {
+        "origin": "data/退款政策.md"
+      }
+    }
+  ]
+}
