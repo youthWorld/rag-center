@@ -256,10 +256,10 @@ export function KnowledgeFileTreePage() {
           />
         ) : (
           <div role="table" aria-label="知识库与文档列表" className="divide-y divide-line">
-            <div role="row" className="hidden grid-cols-[minmax(0,1.35fr)_minmax(160px,0.9fr)_minmax(100px,0.65fr)_minmax(280px,auto)] gap-4 bg-paper/70 px-5 py-3 text-[10px] font-bold uppercase tracking-[0.16em] text-muted sm:grid sm:px-6">
+            <div role="row" className="hidden gap-4 bg-paper/70 px-5 py-3 text-[10px] font-bold uppercase tracking-[0.16em] text-muted lg:grid lg:grid-cols-[minmax(0,1fr)_minmax(145px,0.9fr)_minmax(100px,0.6fr)_240px] lg:px-6 xl:grid-cols-[minmax(0,1.45fr)_minmax(160px,0.9fr)_minmax(105px,0.6fr)_400px]">
               <span role="columnheader">名称</span>
-              <span role="columnheader">kb_id</span>
-              <span role="columnheader">文档</span>
+              <span role="columnheader">知识库 ID</span>
+              <span role="columnheader">文档数量</span>
               <span role="columnheader" className="text-right">操作</span>
             </div>
             {knowledgeBases.map((knowledgeBase) => {
@@ -267,28 +267,36 @@ export function KnowledgeFileTreePage() {
               const knowledgeBaseExpanded = !collapsed.has(kbKey);
               return (
                 <div role="rowgroup" key={knowledgeBase.kb_id} className="bg-white">
-                  <div role="row" className="grid gap-3 px-5 py-4 sm:grid-cols-[minmax(0,1.35fr)_minmax(160px,0.9fr)_minmax(100px,0.65fr)_minmax(280px,auto)] sm:items-center sm:gap-4 sm:px-6">
+                  <div role="row" className="grid gap-3 px-5 py-4 lg:grid-cols-[minmax(0,1fr)_minmax(145px,0.9fr)_minmax(100px,0.6fr)_240px] lg:items-start lg:gap-4 lg:px-6 xl:grid-cols-[minmax(0,1.45fr)_minmax(160px,0.9fr)_minmax(105px,0.6fr)_400px]">
                     <div className="min-w-0">
-                      <button
-                        type="button"
-                        className="flex min-w-0 items-start gap-2.5 text-left"
-                        onClick={() => toggle(kbKey)}
-                        aria-expanded={knowledgeBaseExpanded}
-                      >
-                        {knowledgeBaseExpanded ? <ChevronDown size={16} className="mt-0.5 shrink-0 text-moss" /> : <ChevronRight size={16} className="mt-0.5 shrink-0 text-muted" />}
-                        <span className="min-w-0">
-                          <span className="block truncate text-sm font-bold text-ink">{knowledgeBase.name}</span>
-                          <span className="mt-1 block truncate text-xs text-muted">{knowledgeBase.description || "未填写描述"}</span>
-                        </span>
-                      </button>
+                      <div className="flex min-w-0 items-center gap-1.5">
+                        <button
+                          type="button"
+                          className="flex min-w-0 flex-1 items-center gap-2.5 text-left"
+                          onClick={() => toggle(kbKey)}
+                          aria-expanded={knowledgeBaseExpanded}
+                          aria-label={`${knowledgeBaseExpanded ? "收起" : "展开"} ${knowledgeBase.name}`}
+                        >
+                          {knowledgeBaseExpanded ? <ChevronDown size={16} className="shrink-0 text-moss" /> : <ChevronRight size={16} className="shrink-0 text-muted" />}
+                          <span className="min-w-0 truncate text-sm font-bold text-ink">{knowledgeBase.name}</span>
+                        </button>
+                        <HelpTooltip
+                          content={knowledgeBase.description || "未填写描述"}
+                          label={`查看 ${knowledgeBase.name} 的知识库描述`}
+                          placement="top"
+                        />
+                      </div>
                     </div>
-                    <div className="pl-6 text-xs text-muted sm:pl-0">
-                      <span className="mr-1.5 sm:hidden">kb_id:</span>
-                      <code className="break-all font-mono text-[11px] text-ink/75">{knowledgeBase.kb_id}</code>
+                    <div className="min-w-0 pl-6 sm:pl-0">
+                      <span className="block text-[10px] font-bold uppercase tracking-[0.12em] text-muted sm:hidden">知识库 ID</span>
+                      <code className="mt-1 block truncate font-mono text-[11px] text-ink/75" title={knowledgeBase.kb_id}>{knowledgeBase.kb_id}</code>
                     </div>
-                    <div className="flex items-center gap-2 pl-6 text-xs text-muted sm:pl-0">
+                    <div className="flex min-w-0 items-start gap-2 pl-6 text-xs text-muted sm:pl-0">
                       <FileText size={14} className="text-moss" />
-                      {knowledgeBase.documents.length} 个文档
+                      <span>
+                        <span className="block text-[10px] font-bold uppercase tracking-[0.12em] text-muted sm:hidden">文档数量</span>
+                        <span className="mt-1 block font-semibold text-ink/75">{knowledgeBase.documents.length} 个文档</span>
+                      </span>
                     </div>
                     <div className="flex flex-wrap items-center justify-start gap-1 pl-6 sm:justify-end sm:pl-0">
                       <button
@@ -299,7 +307,7 @@ export function KnowledgeFileTreePage() {
                         onClick={() => void copyKnowledgeBaseId(knowledgeBase.kb_id)}
                       >
                         <Clipboard size={14} />
-                        <span className="hidden lg:inline">复制 ID</span>
+                         <span className="hidden xl:inline">复制 ID</span>
                       </button>
                       <Button
                         type="button"
@@ -311,7 +319,7 @@ export function KnowledgeFileTreePage() {
                         onClick={() => setEditingKnowledgeBaseId(knowledgeBase.kb_id)}
                       >
                         <Pencil size={14} />
-                        <span className="hidden lg:inline">编辑</span>
+                         <span className="hidden xl:inline">编辑</span>
                       </Button>
                       <Button
                         type="button"
@@ -324,7 +332,7 @@ export function KnowledgeFileTreePage() {
                         disabled={deleteKnowledgeBaseMutation.isPending}
                       >
                         <Trash2 size={14} />
-                        <span className="hidden lg:inline">删除</span>
+                         <span className="hidden xl:inline">删除</span>
                       </Button>
                       <Link
                         to={`/?kb_id=${encodeURIComponent(knowledgeBase.kb_id)}`}
@@ -333,7 +341,7 @@ export function KnowledgeFileTreePage() {
                         aria-label={`去上传：${knowledgeBase.name}`}
                       >
                         <Upload size={14} />
-                        <span className="hidden lg:inline">去上传</span>
+                         <span className="hidden xl:inline">去上传</span>
                       </Link>
                       <Link
                         to={`/retrieve?kb_id=${encodeURIComponent(knowledgeBase.kb_id)}`}
@@ -342,7 +350,7 @@ export function KnowledgeFileTreePage() {
                         aria-label={`去检索：${knowledgeBase.name}`}
                       >
                         <FileSearch size={14} />
-                        <span className="hidden lg:inline">去检索</span>
+                         <span className="hidden xl:inline">去检索</span>
                       </Link>
                     </div>
                   </div>

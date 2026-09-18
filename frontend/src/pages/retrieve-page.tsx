@@ -14,6 +14,8 @@ import {
   TriangleAlert,
 } from "lucide-react";
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
+import ReactMarkdown, { type Components } from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { useQuery } from "@tanstack/react-query";
 import { useSearchParams } from "react-router-dom";
 import { Badge } from "../components/ui/badge";
@@ -644,54 +646,67 @@ function CompactNumberField({
   );
 }
 
+const retrievalSourceLabels: Record<RetrievedChunk["retrieval_source"], string> = {
+  vector: "语义召回",
+  bm25: "关键词召回",
+  hybrid: "混合召回",
+};
+
 function RetrievedChunkRow({ chunk, index }: { chunk: RetrievedChunk; index: number }) {
+  const chunkType = getChunkTypeLabel(chunk.metadata?.chunk_type);
+
   return (
     <article className="overflow-hidden rounded-xl border border-line bg-white">
-      <div className="flex flex-col gap-4 px-4 py-4 sm:px-5">
-        <div className="flex flex-col justify-between gap-3 lg:flex-row lg:items-start">
-          <div className="min-w-0">
-            <div className="flex flex-wrap items-center gap-2">
-              <Badge className="border-ember/20 bg-ember/8 text-ember">#{index + 1}</Badge>
-              <span className="font-mono text-xs font-bold text-ink">score={formatScore(chunk.score)}</span>
-              <Badge className="border-line bg-paper text-muted">{chunk.retrieval_source}</Badge>
+      <div className="grid lg:grid-cols-[minmax(240px,0.38fr)_minmax(0,1.62fr)]">
+        <aside className="min-w-0 border-b border-line bg-paper/65 p-5 sm:p-6 lg:border-b-0 lg:border-r">
+          <div className="flex items-center justify-between gap-3">
+            <Badge className="border-ember/20 bg-ember/8 text-ember">#{index + 1}</Badge>
+            <Badge className="border-line bg-white text-muted">{retrievalSourceLabels[chunk.retrieval_source]}</Badge>
+          </div>
+          <h4 className="mt-4 break-words text-[15px] font-bold leading-6 text-ink">{chunk.title}</h4>
+
+          <div className="mt-5 divide-y divide-line border-y border-line bg-white/65 px-3.5">
+            <ScoreMetric label="综合排序分" help="该 chunk 在最终结果中的综合排序分数。" score={chunk.score} rank={index + 1} />
+            <ScoreMetric label="语义相似度" help="向量检索返回的相似度分数及原始排名。" score={chunk.vector_score} rank={chunk.vector_rank} />
+            <ScoreMetric label="关键词匹配分" help="BM25 关键词检索返回的匹配分数及原始排名。" score={chunk.bm25_score} rank={chunk.bm25_rank} />
+            <ScoreMetric label="重排分" help="重排模型对该 chunk 的最终评分及排名。" score={chunk.rerank_score} rank={chunk.rerank_score == null ? null : index + 1} />
+          </div>
+
+          <div className="mt-5 space-y-3 border-t border-line pt-4">
+            <ChunkMetadataRow label="文档 ID" value={chunk.document_id} mono />
+            <ChunkMetadataRow label="切片 ID" value={chunk.chunk_id} mono />
+            {chunk.metadata?.heading_path && <ChunkMetadataRow label="所属章节" value={chunk.metadata.heading_path} />}
+          </div>
+        </aside>
+
+        <section className="min-w-0 p-5 sm:p-6">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-muted">召回内容</p>
+              <p className="mt-1 text-xs text-muted">按 Markdown / GFM 格式渲染</p>
             </div>
-            <h4 className="mt-3 text-sm font-bold text-ink">{chunk.title}</h4>
-            <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted">
-              <span>document_id: <code className="font-mono text-ink/75">{chunk.document_id}</code></span>
-              <span>chunk_id: <code className="font-mono text-ink/75">{chunk.chunk_id}</code></span>
-            </div>
+            {chunkType && <Badge className="border-moss/15 bg-moss/8 text-moss">{chunkType}</Badge>}
           </div>
-          <div className="grid grid-cols-2 gap-x-5 gap-y-2 text-xs lg:min-w-[360px] lg:grid-cols-4">
-             <ScoreMetric label="vector" help="向量相似度召回分数及其原始排名。" score={chunk.vector_score} rank={chunk.vector_rank} />
-             <ScoreMetric label="bm25" help="BM25 关键词召回分数及其原始排名。" score={chunk.bm25_score} rank={chunk.bm25_rank} />
-             <ScoreMetric label="rerank" help="重排模型对该 chunk 的最终评分及排名。" score={chunk.rerank_score} rank={chunk.rerank_score == null ? null : index + 1} />
-             <div>
-               <MetricLabel label="position" help="该 chunk 在最终返回结果中的位置。" />
-               <span className="mt-1 block font-mono font-bold text-ink">#{index + 1}</span>
-             </div>
+          <div className="mt-5 overflow-hidden rounded-xl bg-paper/65 px-4 py-4 sm:px-5 sm:py-5">
+            <MarkdownContent content={chunk.content} chunkType={chunk.metadata?.chunk_type} />
           </div>
-        </div>
-        <details className="group rounded-lg border border-line bg-paper/60">
-          <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-3.5 py-2.5 text-xs font-semibold text-muted hover:text-ink [&::-webkit-details-marker]:hidden">
-            查看 content
-            <ChevronDown size={15} className="transition-transform group-open:rotate-180" />
-          </summary>
-          <div className="border-t border-line px-3.5 py-3 text-xs leading-6 text-ink/80">
-            {chunk.metadata?.heading_path && chunk.metadata?.chunk_type && (
-              <div className="mb-2 flex flex-wrap gap-x-4 gap-y-1 border-b border-line pb-2 text-muted">
-                <span>
-                  所属章节：<strong className="font-semibold text-ink/80">{chunk.metadata.heading_path}</strong>
-                </span>
-                <span>
-                  块类型：<strong className="font-semibold text-ink/80">{chunk.metadata.chunk_type}</strong>
-                </span>
-              </div>
-            )}
-            <p className="whitespace-pre-wrap break-words">{chunk.content}</p>
-          </div>
-        </details>
+        </section>
       </div>
     </article>
+  );
+}
+
+function ChunkMetadataRow({ label, value, mono = false }: { label: string; value: string; mono?: boolean }) {
+  return (
+    <div className="min-w-0">
+      <span className="block text-[11px] text-muted">{label}</span>
+      <span
+        className={`mt-0.5 block break-words leading-5 text-ink/85 ${mono ? "font-mono text-[11px]" : "text-xs font-semibold"}`}
+        title={value}
+      >
+        {value}
+      </span>
+    </div>
   );
 }
 
@@ -707,10 +722,11 @@ function ScoreMetric({
   rank?: number | null;
 }) {
   return (
-    <div>
+    <div className="flex items-center justify-between gap-3 py-2.5">
       <MetricLabel label={label} help={help} />
-      <span className="mt-1 block font-mono font-bold text-ink">
-        {score == null ? "—" : `${formatScore(score)} · #${rank ?? "—"}`}
+      <span className="shrink-0 text-right">
+        <span className="block font-mono text-sm font-bold text-ink">{score == null ? "—" : formatScore(score)}</span>
+        {rank != null && <span className="mt-0.5 block text-[10px] text-muted">第 {rank} 名</span>}
       </span>
     </div>
   );
@@ -718,11 +734,117 @@ function ScoreMetric({
 
 function MetricLabel({ label, help }: { label: string; help?: ReactNode }) {
   return (
-    <span className="flex items-center gap-1 text-[10px] font-bold uppercase tracking-[0.12em] text-muted">
+    <span className="flex items-center gap-1 text-xs font-semibold text-muted">
       {label}
       {help && <HelpTooltip content={help} label={`${label} 指标说明`} />}
     </span>
   );
+}
+
+function MarkdownContent({ content, chunkType }: { content: string; chunkType?: unknown }) {
+  const markdown = normalizeChunkContent(content, chunkType);
+
+  if (!markdown) {
+    return <p className="text-sm text-muted">该切片没有可展示的内容。</p>;
+  }
+
+  return (
+    <div className="min-w-0 break-words text-[13px] leading-7 text-ink/85">
+      <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+        {markdown}
+      </ReactMarkdown>
+    </div>
+  );
+}
+
+const markdownComponents: Components = {
+  h1: ({ children }) => <h3 className="mb-4 text-lg font-bold leading-7 text-ink">{children}</h3>,
+  h2: ({ children }) => <h3 className="mb-3 text-base font-bold leading-6 text-ink">{children}</h3>,
+  h3: ({ children }) => <h4 className="mb-2 text-sm font-bold leading-6 text-ink">{children}</h4>,
+  h4: ({ children }) => <h5 className="mb-2 text-sm font-semibold leading-6 text-ink">{children}</h5>,
+  p: ({ children }) => <p className="mb-3 last:mb-0">{children}</p>,
+  ul: ({ children }) => <ul className="mb-4 list-disc space-y-1 pl-5 last:mb-0">{children}</ul>,
+  ol: ({ children }) => <ol className="mb-4 list-decimal space-y-1 pl-5 last:mb-0">{children}</ol>,
+  li: ({ children }) => <li className="pl-1">{children}</li>,
+  blockquote: ({ children }) => <blockquote className="mb-4 border-l-2 border-moss/40 pl-4 text-muted">{children}</blockquote>,
+  hr: () => <hr className="my-5 border-line" />,
+  strong: ({ children }) => <strong className="font-bold text-ink">{children}</strong>,
+  em: ({ children }) => <em className="text-ink/75">{children}</em>,
+  a: ({ href, children }) => (
+    <a className="font-semibold text-moss underline decoration-moss/30 underline-offset-2 hover:text-moss-dark" href={href} target="_blank" rel="noreferrer">
+      {children}
+    </a>
+  ),
+  pre: ({ children }) => <pre className="mb-4 overflow-x-auto rounded-lg border border-line bg-white px-4 py-3 text-xs leading-6">{children}</pre>,
+  code: ({ className, children }) => (
+    <code className={className ? `font-mono text-[12px] ${className}` : "rounded bg-white px-1.5 py-0.5 font-mono text-[12px] text-moss-dark"}>
+      {children}
+    </code>
+  ),
+  table: ({ children }) => (
+    <div className="mb-4 overflow-x-auto rounded-lg border border-line bg-white last:mb-0">
+      <table className="min-w-full border-collapse text-left text-[12px] leading-5">{children}</table>
+    </div>
+  ),
+  thead: ({ children }) => <thead className="bg-[#e9eef0] text-ink">{children}</thead>,
+  tbody: ({ children }) => <tbody className="divide-y divide-line">{children}</tbody>,
+  tr: ({ children }) => <tr className="align-top">{children}</tr>,
+  th: ({ children }) => <th className="border-b border-line px-3 py-2.5 font-bold">{children}</th>,
+  td: ({ children }) => <td className="px-3 py-2.5 text-ink/80">{children}</td>,
+};
+
+function getChunkTypeLabel(value: unknown) {
+  if (typeof value !== "string" || !value.trim()) return null;
+  return (
+    {
+      section: "正文",
+      table: "表格",
+      table_part: "表格片段",
+    }[value] ?? value
+  );
+}
+
+function normalizeChunkContent(content: string, chunkType: unknown) {
+  const trimmed = content.trim();
+  if (!trimmed || (chunkType !== "table" && chunkType !== "table_part")) return trimmed;
+
+  const lines = trimmed.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  if (lines.length < 2) return trimmed;
+
+  const headerIndex = lines.findIndex((line) => line.startsWith("【表头】"));
+  if (headerIndex >= 0) {
+    const headerCells = splitTableCells(lines[headerIndex].replace("【表头】", ""));
+    if (headerCells.length > 0) {
+      return buildMarkdownTable(headerCells, lines.slice(headerIndex + 1), lines.slice(0, headerIndex));
+    }
+  }
+
+  if (lines[0].includes("|") && !isMarkdownTableSeparator(lines[1])) {
+    const headerCells = splitTableCells(lines[0]);
+    if (headerCells.length > 1) return buildMarkdownTable(headerCells, lines.slice(1));
+  }
+
+  return trimmed;
+}
+
+function buildMarkdownTable(headerCells: string[], rows: string[], prefix: string[] = []) {
+  const normalizedRows = rows.filter(Boolean).map((row) => (row.startsWith("|") ? row : `| ${row} |`));
+  return [
+    ...prefix,
+    `| ${headerCells.join(" | ")} |`,
+    `| ${headerCells.map(() => "---").join(" | ")} |`,
+    ...normalizedRows,
+  ].join("\n");
+}
+
+function splitTableCells(line: string) {
+  const normalized = line.trim().replace(/^\|/, "").replace(/\|$/, "");
+  return normalized.split("|").map((cell) => cell.trim());
+}
+
+function isMarkdownTableSeparator(line: string) {
+  const cells = splitTableCells(line);
+  return cells.length > 0 && cells.every((cell) => /^:?-{3,}:?$/.test(cell));
 }
 
 function RunSummary({ result, isRunning }: { result: RagRetrieveResponse | null; isRunning: boolean }) {
