@@ -26,7 +26,10 @@ def test_hybrid_search_fuses_by_chunk_id_with_rrf() -> None:
     service = HybridSearchService(rrf_k=60)
 
     result = service.fuse(
-        [_chunk("chunk-1", score=0.86), _chunk("chunk-2", score=0.70)],
+        [
+            _chunk("chunk-1", score=0.86),
+            {**_chunk("chunk-2", score=0.70), "metadata": {"heading_path": "退款"}},
+        ],
         [
             {**_chunk("chunk-2"), "bm25_score": 12.4},
             {**_chunk("chunk-3"), "bm25_score": 9.8},
@@ -42,10 +45,11 @@ def test_hybrid_search_fuses_by_chunk_id_with_rrf() -> None:
         "score": pytest.approx(1 / 62 + 1 / 61),
         "vector_score": 0.70,
         "bm25_score": 12.4,
-        "vector_rank": 2,
-        "bm25_rank": 1,
-        "retrieval_source": "hybrid",
-    }
+            "vector_rank": 2,
+            "bm25_rank": 1,
+            "retrieval_source": "hybrid",
+            "metadata": {"heading_path": "退款"},
+        }
     assert result[1]["retrieval_source"] == "vector"
     assert result[2]["retrieval_source"] == "bm25"
 
@@ -68,6 +72,7 @@ class FakeEmbeddingProvider(EmbeddingProvider):
 class FakeVectorStore(VectorStore):
     def __init__(self) -> None:
         self.calls: list[dict] = []
+        self.chunks = [_chunk("chunk-1", score=0.9), _chunk("chunk-2", score=0.8)]
 
     async def add_chunks(self, chunks: list[dict]) -> None:
         del chunks
@@ -81,7 +86,7 @@ class FakeVectorStore(VectorStore):
                 "top_k": top_k,
             }
         )
-        return [_chunk("chunk-1", score=0.9), _chunk("chunk-2", score=0.8)][:top_k]
+        return self.chunks[:top_k]
 
     async def delete_by_document_id(self, document_id: str) -> None:
         del document_id
@@ -193,6 +198,7 @@ async def test_rag_service_runs_vector_and_bm25_in_hybrid_mode() -> None:
         "chunk-3",
     ]
     assert response.retrieved_chunks[0].retrieval_source == "hybrid"
+    assert response.retrieved_chunks[0].metadata == {}
     assert response.retrieved_chunks[0].vector_rank == 2
     assert response.retrieved_chunks[0].bm25_rank == 1
     assert response.metadata["retrieval"] == {
@@ -208,6 +214,30 @@ async def test_rag_service_runs_vector_and_bm25_in_hybrid_mode() -> None:
         "fused_count": 3,
     }
     assert isinstance(response.metadata["latency_ms"], int)
+
+
+@pytest.mark.asyncio
+async def test_rag_service_preserves_chunk_metadata() -> None:
+    service = _rag_service()
+    service.vector_store.chunks[0]["metadata"] = {
+        "heading_path": "平台交易规则 / 退款时效",
+        "chunk_type": "table",
+    }
+
+    response = await service.retrieve(
+        RagRetrieveRequest(
+            kb_id="kb-test",
+            user_id="user-test",
+            query="refund",
+            top_k=1,
+        ),
+        tenant_id="tenant-test",
+    )
+
+    assert response.retrieved_chunks[0].metadata == {
+        "heading_path": "平台交易规则 / 退款时效",
+        "chunk_type": "table",
+    }
 
 
 @pytest.mark.asyncio

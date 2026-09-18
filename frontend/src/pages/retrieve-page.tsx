@@ -677,6 +677,16 @@ function RetrievedChunkRow({ chunk, index }: { chunk: RetrievedChunk; index: num
             <ChevronDown size={15} className="transition-transform group-open:rotate-180" />
           </summary>
           <div className="border-t border-line px-3.5 py-3 text-xs leading-6 text-ink/80">
+            {chunk.metadata?.heading_path && chunk.metadata?.chunk_type && (
+              <div className="mb-2 flex flex-wrap gap-x-4 gap-y-1 border-b border-line pb-2 text-muted">
+                <span>
+                  所属章节：<strong className="font-semibold text-ink/80">{chunk.metadata.heading_path}</strong>
+                </span>
+                <span>
+                  块类型：<strong className="font-semibold text-ink/80">{chunk.metadata.chunk_type}</strong>
+                </span>
+              </div>
+            )}
             <p className="whitespace-pre-wrap break-words">{chunk.content}</p>
           </div>
         </details>

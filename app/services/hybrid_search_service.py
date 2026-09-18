@@ -92,6 +92,7 @@ class HybridSearchService:
                     vector_rank=vector_rank,
                     bm25_rank=bm25_rank,
                     retrieval_source=source,
+                    metadata=chunk["metadata"],
                 ).model_dump()
             )
 
@@ -121,6 +122,7 @@ class HybridSearchService:
                     "bm25_score": None,
                     "vector_rank": None,
                     "bm25_rank": None,
+                    "metadata": dict(chunk.get("metadata") or {}),
                 },
             )
             if not record["document_id"] and chunk.get("document_id") is not None:
@@ -129,6 +131,8 @@ class HybridSearchService:
                 record["title"] = str(chunk["title"])
             if not record["content"] and chunk.get("content") is not None:
                 record["content"] = str(chunk["content"])
+            if not record["metadata"] and chunk.get("metadata"):
+                record["metadata"] = dict(chunk["metadata"])
 
             if source == "vector" and record["vector_rank"] is None:
                 record["vector_rank"] = rank

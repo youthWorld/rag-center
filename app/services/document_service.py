@@ -128,10 +128,19 @@ class DocumentService:
         )
         if document is None:
             raise DocumentNotFoundError(document_id)
-        if document.status != int(DocumentStatus.FAILED):
+        if document.status == int(DocumentStatus.PROCESSING):
             raise_app_error(
                 ErrorCode.PARAM_ERROR,
-                "only failed documents can be reindexed",
+                "cannot reindex a processing document",
+                context={"document_id": document.id, "status": int(document.status)},
+            )
+        if document.status not in {
+            int(DocumentStatus.SUCCESS),
+            int(DocumentStatus.FAILED),
+        }:
+            raise_app_error(
+                ErrorCode.PARAM_ERROR,
+                "only successful or failed documents can be reindexed",
                 context={"document_id": document.id, "status": int(document.status)},
             )
         if self.quota_service is not None:

@@ -46,6 +46,7 @@ class RetrievedChunk(BaseModel):
     bm25_rank: int | None = Field(default=None, ge=1)
     retrieval_source: RetrievalSource = "vector"
     rerank_score: float | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class RetrieveMetadata(TypedDict, total=False):

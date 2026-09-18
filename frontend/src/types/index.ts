@@ -147,6 +147,11 @@ export type RetrievedChunk = {
   bm25_rank?: number | null;
   retrieval_source: "vector" | "bm25" | "hybrid";
   rerank_score?: number | null;
+  metadata?: {
+    heading_path?: string | null;
+    chunk_type?: string | null;
+    [key: string]: unknown;
+  };
 };
 
 export type RetrievalMetadata = {

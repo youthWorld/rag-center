@@ -165,6 +165,51 @@ async def test_reindex_purges_old_chunks_before_enqueuing(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_reindex_allows_success_document(monkeypatch) -> None:
+    session = FakeSession()
+    document = make_document(status=int(DocumentStatus.SUCCESS))
+    events: list[str] = []
+    indexing = SimpleNamespace(
+        purge_document_chunks=AsyncMock(side_effect=lambda _id: events.append("purge")),
+        mark_document_failed=AsyncMock(),
+    )
+    service = DocumentService(
+        session=session,
+        document_repository=FakeDocumentRepository(document),
+        knowledge_base_repository=SimpleNamespace(),
+        indexing_service=indexing,
+    )
+    delay = Mock(side_effect=lambda _id: events.append("enqueue"))
+    monkeypatch.setattr(
+        document_service_module,
+        "index_document_task",
+        SimpleNamespace(delay=delay),
+    )
+
+    result = await service.reindex("document-test", tenant_id="tenant-test")
+
+    assert result.status == int(DocumentStatus.PROCESSING)
+    assert document.status == int(DocumentStatus.PROCESSING)
+    assert events == ["purge", "enqueue"]
+
+
+@pytest.mark.asyncio
+async def test_reindex_rejects_processing_document() -> None:
+    document = make_document(status=int(DocumentStatus.PROCESSING))
+    service = DocumentService(
+        session=FakeSession(),
+        document_repository=FakeDocumentRepository(document),
+        knowledge_base_repository=SimpleNamespace(),
+        indexing_service=SimpleNamespace(),
+    )
+
+    with pytest.raises(AppError) as raised:
+        await service.reindex("document-test", tenant_id="tenant-test")
+
+    assert raised.value.code == ErrorCode.PARAM_ERROR.code
+
+
+@pytest.mark.asyncio
 async def test_delete_rejects_processing_document() -> None:
     document = make_document(status=int(DocumentStatus.PROCESSING))
     service = DocumentService(

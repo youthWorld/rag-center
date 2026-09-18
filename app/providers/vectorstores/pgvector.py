@@ -34,6 +34,7 @@ class PgVectorStore(VectorStore):
                 "title": chunk.title,
                 "content": chunk.content,
                 "score": score,
+                "metadata": dict(chunk.chunk_metadata or {}),
             }
             for chunk, score in rows
         ]

@@ -37,7 +37,7 @@ class Settings(BaseSettings):
 
     vector_store: str = "pgvector"
     keyword_search_provider: str = "elasticsearch"
-    elasticsearch_url: str = "http://localhost:9200"
+    elasticsearch_url: str = "http://localhost:19200"
     elasticsearch_index: str = "rag_chunks"
     retrieval_mode: str = "vector"
     hybrid_fusion: str = "rrf"
@@ -47,6 +47,11 @@ class Settings(BaseSettings):
     hybrid_top_n: int = 20
     chunk_size: int = 800
     chunk_overlap: int = 100
+    table_max_rows_per_chunk: int = Field(
+        default=10,
+        ge=1,
+        description="Maximum number of table data rows stored in one chunk.",
+    )
     top_k: int = 5
 
     rerank_enabled: bool = False

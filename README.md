@@ -148,7 +148,7 @@ uv run python scripts/run_retrieval_eval.py --dataset <dataset> --api-key <api-k
 - `DELETE /api/v1/documents/{document_id}`
 - `POST /api/v1/documents/{document_id}/reindex`
 
-删除文档和重新索引文档时，会清理该文档在 pgvector 与 Elasticsearch 中的旧检索数据。`reindex` 只允许 FAILED 文档执行：它保留原文档记录和内容，清理旧 chunk，将状态改为 PROCESSING，再投递新的 Celery 索引任务。PROCESSING 文档不能删除或 reindex；包含 PROCESSING 文档的知识库不能删除。
+删除文档和重新索引文档时，会清理该文档在 pgvector 与 Elasticsearch 中的旧检索数据。`reindex` 支持 SUCCESS 和 FAILED 文档：它保留原文档记录和内容，清理旧 chunk，将状态改为 PROCESSING，再投递新的 Celery 索引任务。PROCESSING 文档不能删除或 reindex；包含 PROCESSING 文档的知识库不能删除。
 
 失败文档可以通过接口重新索引：
 
@@ -156,6 +156,38 @@ uv run python scripts/run_retrieval_eval.py --dataset <dataset> --api-key <api-k
 curl.exe -s -X POST "http://127.0.0.1:8000/api/v1/documents/<document_id>/reindex" `
   -H "Authorization: Bearer <api-key>"
 ```
+
+### 切块策略升级后批量 reindex
+
+Markdown 结构化切块只会影响新执行的索引任务。升级切块代码后，已有文档的旧 chunk 仍然存在于 pgvector 和 Elasticsearch 中，需要对目标知识库执行一次批量 reindex：
+
+```powershell
+uv run python scripts/reindex_knowledge_base.py --kb-id <knowledge-base-id>
+```
+
+脚本默认选择目标知识库下状态为 `SUCCESS(1)` 的文档；`--tenant-id` 可显式校验租户，不传时从知识库记录反查。也可以重复传入 `--document-id`，只重建指定文档：
+
+```powershell
+uv run python scripts/reindex_knowledge_base.py `
+  --kb-id <knowledge-base-id> `
+  --tenant-id <tenant-id> `
+  --document-id <document-id-1> `
+  --document-id <document-id-2>
+```
+
+每篇文档会先清理 pgvector 和 Elasticsearch 中的旧 chunk，再提交 `PROCESSING` 状态并投递 `index_document_task`。脚本会等待 Worker 将任务处理到终态：`success` 表示文档已经恢复为 `SUCCESS(1)`，`failed` 表示入队失败、Worker 索引失败或等待超时，`skipped` 表示文档已经处于 `PROCESSING`。单篇失败不会阻断其余文档，并会输出对应的 `document_id`。建议在低峰期执行。
+
+执行批量 reindex 前先重启 Celery Worker，使 Worker 加载最新的 Markdown 切块代码和环境配置。
+
+### Markdown 切块与 reindex 验收
+
+API、PostgreSQL、Redis、Elasticsearch、Celery Worker 和后端启动后，可以运行真实端到端验收：
+
+```powershell
+uv run python scripts/acceptance/run_markdown_reindex_acceptance.py
+```
+
+该脚本位于 `scripts/acceptance/`，仅用于真实环境验收，不作为日常业务脚本使用。脚本会创建带唯一标记的临时租户、API Key、知识库和文档，验证标题切块、表格切块、检索 metadata、批量 reindex、Worker 失败继续执行、PROCESSING 跳过、SUCCESS 强制 reindex 和纯文本文档。脚本无论成功或失败都会在 `finally` 中删除临时租户、API Key、知识库、文档、PostgreSQL chunks、检索日志和 Elasticsearch 文档，并进行残留检查。
 
 ### RAG 检索增强
 
@@ -258,7 +290,7 @@ uv run python scripts/update_kb_settings.py `
 
 | 操作                                      | 适用场景                         | 是否清理该文档旧检索数据 | 任务消息   |
 | ----------------------------------------- | -------------------------------- | ------------------------ | ---------- |
-| `POST /documents/{document_id}/reindex` | 文档状态为 FAILED                | 是                       | 新建任务   |
+| `POST /documents/{document_id}/reindex` | 文档状态为 SUCCESS 或 FAILED    | 是                       | 新建任务   |
 | `restore_celery_task.py restore`        | 原消息仍在 Redis 未确认列表      | 否                       | 恢复原消息 |
 | `index_document_task.delay(...)`        | 文档为 PROCESSING 且原消息已丢失 | 否                       | 新建任务   |
 

@@ -519,26 +519,18 @@ async def run() -> None:
         assert await es_chunk_count(reindex_document) > 0
         print("PASS FAILED document reindex reaches SUCCESS")
 
-        stable_pg_count = await pg_chunk_count(reindex_document)
-        stable_es_count = await es_chunk_count(reindex_document)
         response, payload = await call(
             client,
             "POST",
             f"/api/v1/documents/{reindex_document}/reindex",
             tenant_a.api_key,
         )
-        assert_error(response, payload, code=10001, status_code=400)
-        response, payload = await call(
-            client,
-            "GET",
-            f"/api/v1/documents/{reindex_document}",
-            tenant_a.api_key,
-        )
         data = assert_success(response, payload)
-        assert data["status"] == 1
-        assert await pg_chunk_count(reindex_document) == stable_pg_count
-        assert await es_chunk_count(reindex_document) == stable_es_count
-        print("PASS SUCCESS document reindex is rejected without changing indexes")
+        assert data["status"] == 3
+        await wait_for_success(client, tenant_a, reindex_document)
+        assert await pg_chunk_count(reindex_document) > 0
+        assert await es_chunk_count(reindex_document) > 0
+        print("PASS SUCCESS document reindex reaches SUCCESS")
 
         isolation_kb = await create_kb(client, tenant_a, "isolation")
         isolation_document, _ = await upload_document(

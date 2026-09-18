@@ -359,6 +359,7 @@ class RagService:
                     if item.get("rerank_score") is not None
                     else None
                 ),
+                metadata=dict(item.get("metadata") or {}),
             )
             for item in response_chunks
         ]

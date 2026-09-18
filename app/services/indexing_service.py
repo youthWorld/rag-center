@@ -15,6 +15,7 @@ from app.repositories.document_repository import DocumentRepository
 from app.repositories.knowledge_base_repository import KnowledgeBaseRepository
 from app.schemas.document import DocumentUploadRequest
 from app.utils.id_generator import generate_id
+from app.utils.markdown_splitter import MarkdownStructuredSplitter, SplitPiece
 from app.utils.text_splitter import TextSplitter
 
 
@@ -27,6 +28,7 @@ class IndexingService:
         splitter: TextSplitter,
         embedding_provider: EmbeddingProvider,
         vector_store: VectorStore,
+        markdown_splitter: MarkdownStructuredSplitter | None = None,
         keyword_search_provider: KeywordSearchProvider | None = None,
         document_parser: DocumentParser | None = None,
         session: AsyncSession | None = None,
@@ -35,6 +37,10 @@ class IndexingService:
     ) -> None:
         self.session = session
         self.splitter = splitter
+        self.markdown_splitter = markdown_splitter or MarkdownStructuredSplitter(
+            chunk_size=splitter.chunk_size,
+            chunk_overlap=splitter.chunk_overlap,
+        )
         self.embedding_provider = embedding_provider
         self.vector_store = vector_store
         self.keyword_search_provider = keyword_search_provider
@@ -144,14 +150,16 @@ class IndexingService:
             document.content,
             source_type=document.source_type or "text",
         )
-        contents = self.splitter.split_text(parsed_content)
-        if not contents:
+        pieces = self._split_document_content(document, parsed_content)
+        if not pieces:
             raise ValueError("document content cannot be empty")
 
+        contents = [piece.text for piece in pieces]
         embeddings = await self.embedding_provider.embed_documents(contents)
         if len(embeddings) != len(contents):
             raise ValueError("embedding provider returned an unexpected number of vectors")
 
+        source_type = document.source_type or "text"
         chunks = [
             {
                 "id": generate_id(),
@@ -159,11 +167,19 @@ class IndexingService:
                 "kb_id": document.kb_id,
                 "document_id": document.id,
                 "title": document.title,
-                "content": content,
-                "metadata": {"chunk_index": index},
+                "content": piece.text,
+                "metadata": {
+                    "chunk_index": index,
+                    "source_type": source_type,
+                    "heading_path": piece.metadata.get("heading_path"),
+                    "chunk_type": piece.metadata.get("chunk_type", "section"),
+                    "table_part": piece.metadata.get("table_part"),
+                },
                 "embedding": embedding,
             }
-            for index, (content, embedding) in enumerate(zip(contents, embeddings, strict=True))
+            for index, (piece, embedding) in enumerate(
+                zip(pieces, embeddings, strict=True)
+            )
         ]
         await self.vector_store.add_chunks(chunks)
         if self.keyword_search_provider is not None:
@@ -174,6 +190,29 @@ class IndexingService:
             len(chunks),
         )
         return len(chunks)
+
+    def _split_document_content(
+        self,
+        document: Document,
+        content: str,
+    ) -> list[SplitPiece]:
+        if self._is_markdown_document(document):
+            return self.markdown_splitter.split(content)
+        return [
+            SplitPiece(
+                text=piece,
+                metadata={"chunk_type": "section", "heading_path": None},
+            )
+            for piece in self.splitter.split_text(content)
+        ]
+
+    @staticmethod
+    def _is_markdown_document(document: Document) -> bool:
+        source_type = (document.source_type or "").lower()
+        if source_type in {"markdown", "md"}:
+            return True
+        title = (document.title or "").lower()
+        return title.endswith((".md", ".markdown"))
 
     async def _mark_failed(self, document_id: str, exception: Exception) -> None:
         await self.session.rollback()
@@ -218,6 +257,11 @@ def build_indexing_service(session: AsyncSession, app_settings: Settings) -> Ind
         splitter=TextSplitter(
             chunk_size=app_settings.chunk_size,
             chunk_overlap=app_settings.chunk_overlap,
+        ),
+        markdown_splitter=MarkdownStructuredSplitter(
+            chunk_size=app_settings.chunk_size,
+            chunk_overlap=app_settings.chunk_overlap,
+            table_max_rows_per_chunk=app_settings.table_max_rows_per_chunk,
         ),
         embedding_provider=OpenAICompatibleEmbeddingProvider(app_settings),
         vector_store=PgVectorStore(session),
