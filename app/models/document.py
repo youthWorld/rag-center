@@ -29,7 +29,9 @@ class Document(Base):
     )
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     source_type: Mapped[str] = mapped_column(String(32), nullable=False, default="text")
-    content: Mapped[str] = mapped_column(Text, nullable=False)
+    source_file_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source_filename: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    content: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[int] = mapped_column(
         Integer, nullable=False, default=int(DocumentStatus.PROCESSING)
     )

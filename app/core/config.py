@@ -7,12 +7,12 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     app_env: str = "local"
     auth_enabled: bool = True
-    database_url: str = "postgresql+psycopg://postgres:postgres@localhost:5432/rag_center"
-    celery_broker_url: str = "redis://localhost:6379/0"
-    celery_result_backend: str = "redis://localhost:6379/1"
+    database_url: str = "postgresql+psycopg://postgres:postgres@localhost:15433/rag_center"
+    celery_broker_url: str = "redis://localhost:16379/0"
+    celery_result_backend: str = "redis://localhost:16379/1"
 
     langfuse_enabled: bool = False
-    langfuse_host: str = "http://localhost:3000"
+    langfuse_host: str = "http://localhost:13000"
     langfuse_public_key: str = ""
     langfuse_secret_key: str = ""
 
@@ -53,6 +53,8 @@ class Settings(BaseSettings):
         description="Maximum number of table data rows stored in one chunk.",
     )
     top_k: int = 5
+    document_storage_path: str = "./data/uploads"
+    document_max_size_mb: int = Field(default=20, ge=1)
 
     rerank_enabled: bool = False
     rerank_provider: str = "llm"

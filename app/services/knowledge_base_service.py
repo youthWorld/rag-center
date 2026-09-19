@@ -2,6 +2,7 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import Settings, settings
 from app.core.error_codes import ErrorCode
 from app.core.exceptions import KnowledgeBaseNotFoundError, raise_app_error
 from app.core.logging import get_logger
@@ -18,6 +19,7 @@ from app.schemas.knowledge_base import (
     KnowledgeBaseTreeResponse,
     KnowledgeBaseUpdateRequest,
 )
+from app.services.document_storage import DocumentStorage
 from app.services.indexing_service import IndexingService
 from app.tenant.plan_resolver import PlanResolver
 from app.utils.knowledge_base_settings import validate_knowledge_base_settings
@@ -32,6 +34,7 @@ class KnowledgeBaseService:
         indexing_service: IndexingService | None = None,
         plan_resolver: PlanResolver | None = None,
         quota_service: Any | None = None,
+        app_settings: Settings | None = None,
     ) -> None:
         self.session = session
         self.repository = repository
@@ -39,6 +42,9 @@ class KnowledgeBaseService:
         self.indexing_service = indexing_service
         self.plan_resolver = plan_resolver or PlanResolver()
         self.quota_service = quota_service
+        self.document_storage = DocumentStorage(
+            (app_settings or settings).document_storage_path
+        )
         self.logger = get_logger(__name__)
 
     async def create(
@@ -142,6 +148,10 @@ class KnowledgeBaseService:
                 "cannot delete a knowledge base with processing documents",
                 context={"kb_id": kb_id},
             )
+        source_files = [
+            (document.id, getattr(document, "source_file_path", None))
+            for document in documents
+        ]
 
         try:
             for document in documents:
@@ -152,6 +162,12 @@ class KnowledgeBaseService:
         except Exception:
             await self.session.rollback()
             raise
+        for document_id, source_file_path in source_files:
+            await self.document_storage.remove(
+                tenant_id=tenant_id,
+                document_id=document_id,
+                source_file_path=source_file_path,
+            )
         self.logger.info(
             "BUSINESS_EVENT | event=knowledge_base_deleted | kb_id=%s | tenant_id=%s",
             kb_id,

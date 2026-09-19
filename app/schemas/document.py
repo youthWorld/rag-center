@@ -33,6 +33,8 @@ class DocumentDetailResponse(BaseModel):
     chunk_count: int = Field(ge=0)
     created_at: datetime
     updated_at: datetime
+    source_type: str = "text"
+    source_filename: str | None = None
 
 
 class DocumentDeleteResponse(BaseModel):

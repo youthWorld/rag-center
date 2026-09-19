@@ -134,6 +134,23 @@ uv run python scripts/run_retrieval_eval.py --dataset <dataset> --api-key <api-k
 
 接口只负责校验知识库归属、保存原文并投递 Celery 任务，立即返回 `status=3`（PROCESSING）和 `chunk_count=0`。Worker 在后台完成文本切片、Embedding 生成，以及 pgvector 和 Elasticsearch 双写；状态值为 `1` 表示成功，`2` 表示失败。可以通过 `GET /api/v1/documents/{document_id}` 轮询状态。
 
+上传接口同时支持 `multipart/form-data`。`.md` 和 `.txt` 继续使用 JSON 文本上传；`.docx` 和文字版 `.pdf` 使用文件上传，原文件会保存到 `DOCUMENT_STORAGE_PATH/{tenant_id}/{document_id}/`，由 Worker 在索引前解析：
+
+```powershell
+curl.exe -sS -X POST "http://127.0.0.1:8000/api/v1/documents/upload" `
+  -H "Authorization: Bearer <api-key>" `
+  -F "kb_id=<knowledge-base-id>" `
+  -F "file=@sample.docx"
+```
+
+DOCX/PDF 解析依赖属于后端核心依赖，执行普通同步即可安装：
+
+```powershell
+uv sync
+```
+
+支持的文件扩展名为 `.md`、`.txt`、`.docx` 和 `.pdf`，默认大小限制为 `DOCUMENT_MAX_SIZE_MB=20`。扫描件 PDF 会进入 `FAILED`，错误信息会提示本期不支持 OCR。
+
 ### 生命周期运维
 
 知识库支持详情、settings 整体替换和删除：
@@ -148,7 +165,9 @@ uv run python scripts/run_retrieval_eval.py --dataset <dataset> --api-key <api-k
 - `DELETE /api/v1/documents/{document_id}`
 - `POST /api/v1/documents/{document_id}/reindex`
 
-删除文档和重新索引文档时，会清理该文档在 pgvector 与 Elasticsearch 中的旧检索数据。`reindex` 支持 SUCCESS 和 FAILED 文档：它保留原文档记录和内容，清理旧 chunk，将状态改为 PROCESSING，再投递新的 Celery 索引任务。PROCESSING 文档不能删除或 reindex；包含 PROCESSING 文档的知识库不能删除。
+删除文档和知识库时，会清理原始上传文件以及该文档在 pgvector 与 Elasticsearch 中的旧检索数据。`reindex` 支持 SUCCESS 和 FAILED 文档：它保留原文档记录和内容，清理旧 chunk，将状态改为 PROCESSING，再投递新的 Celery 索引任务。PROCESSING 文档不能删除或 reindex；包含 PROCESSING 文档的知识库不能删除。
+
+带有原始文件的文档可以通过 `POST /api/v1/documents/{document_id}/reindex?reparse=true` 从文件重新解析；纯 JSON 文本文档会忽略该参数。批量脚本也支持 `--reparse`。
 
 失败文档可以通过接口重新索引：
 
@@ -185,6 +204,14 @@ API、PostgreSQL、Redis、Elasticsearch、Celery Worker 和后端启动后，�
 
 ```powershell
 uv run python scripts/acceptance/run_markdown_reindex_acceptance.py
+```
+
+多格式解析验收需要一个已有知识库 ID：
+
+```powershell
+uv run python scripts/verify_parser_12.py `
+  --kb-id <knowledge-base-id> `
+  --api-key rk_live_你的key
 ```
 
 该脚本位于 `scripts/acceptance/`，仅用于真实环境验收，不作为日常业务脚本使用。脚本会创建带唯一标记的临时租户、API Key、知识库和文档，验证标题切块、表格切块、检索 metadata、批量 reindex、Worker 失败继续执行、PROCESSING 跳过、SUCCESS 强制 reindex 和纯文本文档。脚本无论成功或失败都会在 `finally` 中删除临时租户、API Key、知识库、文档、PostgreSQL chunks、检索日志和 Elasticsearch 文档，并进行残留检查。
@@ -386,6 +413,8 @@ API Key 只在创建命令中明文输出一次，数据库只保存 SHA-256 has
    ```powershell
    docker compose up -d
    ```
+
+   Compose 默认将宿主机端口映射为 PostgreSQL `15433`、Redis `16379`、Elasticsearch `19200`、Elasticsearch transport `19300`、Langfuse PostgreSQL `15432` 和 Langfuse `13000`；容器内部端口保持不变。
 6. 执行数据库迁移：
 
    ```powershell
@@ -528,4 +557,4 @@ uv run alembic upgrade head
 
 ## 当前边界
 
-当前仍不包含多种文件格式解析、OpenSearch、复杂权限系统、评测系统、A/B 测试和多轮会话记忆。
+当前仍不包含 OCR、OpenSearch、复杂权限系统、评测系统、A/B 测试和多轮会话记忆。

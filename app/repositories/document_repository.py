@@ -16,8 +16,10 @@ class DocumentRepository:
         tenant_id: str,
         kb_id: str,
         title: str,
-        content: str,
+        content: str | None,
         source_type: str = "text",
+        source_file_path: str | None = None,
+        source_filename: str | None = None,
     ) -> Document:
         document = Document(
             id=generate_id(),
@@ -25,6 +27,8 @@ class DocumentRepository:
             kb_id=kb_id,
             title=title,
             source_type=source_type,
+            source_file_path=source_file_path,
+            source_filename=source_filename,
             content=content,
             status=int(DocumentStatus.PROCESSING),
         )

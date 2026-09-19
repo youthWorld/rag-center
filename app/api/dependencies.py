@@ -106,6 +106,7 @@ def get_knowledge_base_service(
     indexing_service: IndexingService = Depends(get_indexing_service),
     plan_resolver: PlanResolver = Depends(get_plan_resolver),
     quota_service: QuotaService = Depends(get_quota_service),
+    app_settings: Settings = Depends(get_settings),
 ) -> KnowledgeBaseService:
     return KnowledgeBaseService(
         session=session,
@@ -114,6 +115,7 @@ def get_knowledge_base_service(
         indexing_service=indexing_service,
         plan_resolver=plan_resolver,
         quota_service=quota_service,
+        app_settings=app_settings,
     )
 
 
@@ -122,6 +124,7 @@ def get_document_service(
     indexing_service: IndexingService = Depends(get_indexing_service),
     plan_resolver: PlanResolver = Depends(get_plan_resolver),
     quota_service: QuotaService = Depends(get_quota_service),
+    app_settings: Settings = Depends(get_settings),
 ) -> DocumentService:
     return DocumentService(
         session=session,
@@ -130,6 +133,7 @@ def get_document_service(
         indexing_service=indexing_service,
         plan_resolver=plan_resolver,
         quota_service=quota_service,
+        app_settings=app_settings,
     )
 
 

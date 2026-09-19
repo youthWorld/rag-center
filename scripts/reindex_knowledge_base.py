@@ -62,6 +62,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         action="append",
         help="Only reindex this document. Repeat the option for multiple documents.",
     )
+    parser.add_argument(
+        "--reparse",
+        action="store_true",
+        help="Parse stored source files again before indexing when available.",
+    )
     return parser.parse_args(argv)
 
 
@@ -77,6 +82,7 @@ async def reindex_knowledge_base(
     wait_for_completion: bool = True,
     wait_timeout_seconds: int = 300,
     poll_interval_seconds: float = 1.0,
+    reparse: bool = False,
 ) -> ReindexStats:
     """Purge and enqueue reindex tasks for one knowledge base.
 
@@ -105,15 +111,17 @@ async def reindex_knowledge_base(
     for position, document_id in enumerate(selected_ids, start=1):
         print(f"[{position}/{total}] processing document_id={document_id}")
         try:
-            outcome = await _reindex_one_document(
-                document_id,
-                kb_id=kb_id,
-                tenant_id=effective_tenant_id,
-                db_session_factory=db_session_factory,
-                task=task,
-                service_builder=builder,
-                app_settings=configured_settings,
-            )
+            reindex_kwargs = {
+                "kb_id": kb_id,
+                "tenant_id": effective_tenant_id,
+                "db_session_factory": db_session_factory,
+                "task": task,
+                "service_builder": builder,
+                "app_settings": configured_settings,
+            }
+            if reparse:
+                reindex_kwargs["reparse"] = True
+            outcome = await _reindex_one_document(document_id, **reindex_kwargs)
         except Exception as exc:
             stats.failed += 1
             stats.failed_document_ids.append(document_id)
@@ -259,6 +267,7 @@ async def _reindex_one_document(
     task: Any,
     service_builder: Callable[[Any, Any], IndexingService],
     app_settings: Any,
+    reparse: bool = False,
 ) -> str:
     async with db_session_factory() as session:
         document = await DocumentRepository(session).get_by_id(document_id=document_id)
@@ -286,7 +295,10 @@ async def _reindex_one_document(
             document.error_message = None
             await session.commit()
             try:
-                task.delay(document.id)
+                if reparse and getattr(document, "source_file_path", None):
+                    task.delay(document.id, reparse=True)
+                else:
+                    task.delay(document.id)
             except Exception as exc:
                 await service.mark_document_failed(document.id, str(exc))
                 raise
@@ -316,6 +328,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args.kb_id,
                 tenant_id=args.tenant_id,
                 document_ids=args.document_ids,
+                reparse=args.reparse,
             )
         )
     except ReindexSelectionError as exc:

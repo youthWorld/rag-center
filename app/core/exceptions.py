@@ -23,6 +23,7 @@ _DEFAULT_STATUS_CODES = {
     ErrorCode.FEEDBACK_LOG_MISMATCH: 400,
     ErrorCode.FEEDBACK_SCORE_INVALID: 400,
     ErrorCode.FEEDBACK_ALREADY_SUBMITTED: 409,
+    ErrorCode.DOCUMENT_PARSE_FAILED: 400,
     ErrorCode.DB_ERROR: 500,
     ErrorCode.DATA_DUPLICATE: 409,
     ErrorCode.STORAGE_NOT_FOUND: 404,
@@ -123,6 +124,16 @@ class DocumentIndexingError(AppError):
             data={"document_id": document_id, "status": 2},
             internal_message=f"document indexing failed: {message}",
             context={"document_id": document_id},
+        )
+
+
+class DocumentParseError(AppError):
+    def __init__(self, message: str, *, filename: str | None = None) -> None:
+        super().__init__(
+            "document parsing failed",
+            code=ErrorCode.DOCUMENT_PARSE_FAILED,
+            internal_message=message,
+            context={"filename": filename} if filename else None,
         )
 
 

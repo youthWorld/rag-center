@@ -26,6 +26,7 @@ class ErrorCode(Enum):
     FEEDBACK_LOG_MISMATCH = (20021, "log_id and trace_id do not match")
     FEEDBACK_SCORE_INVALID = (20022, "score must be between 1 and 5")
     FEEDBACK_ALREADY_SUBMITTED = (20023, "feedback already submitted for this trace")
+    DOCUMENT_PARSE_FAILED = (20024, "document parsing failed")
 
     # Database and storage errors.
     DB_ERROR = (30001, "database operation failed")

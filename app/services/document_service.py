@@ -1,5 +1,10 @@
+from __future__ import annotations
+
+from pathlib import Path
+
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import Settings, settings
 from app.core.error_codes import ErrorCode
 from app.core.exceptions import (
     DocumentIndexingError,
@@ -8,6 +13,7 @@ from app.core.exceptions import (
 )
 from app.core.logging import get_logger
 from app.models.document import DocumentStatus
+from app.providers.parsers.registry import is_supported_document, source_type_for_filename
 from app.repositories.document_repository import DocumentRepository
 from app.repositories.knowledge_base_repository import KnowledgeBaseRepository
 from app.schemas.document import (
@@ -16,6 +22,7 @@ from app.schemas.document import (
     DocumentUploadRequest,
     DocumentUploadResponse,
 )
+from app.services.document_storage import DocumentStorage
 from app.services.indexing_service import IndexingService
 from app.tasks.indexing import index_document_task
 from app.tenant.plan_resolver import PlanResolver
@@ -30,6 +37,7 @@ class DocumentService:
         indexing_service: IndexingService,
         plan_resolver: PlanResolver | None = None,
         quota_service: object | None = None,
+        app_settings: Settings | None = None,
     ) -> None:
         self.session = session
         self.document_repository = document_repository
@@ -37,6 +45,8 @@ class DocumentService:
         self.indexing_service = indexing_service
         self.plan_resolver = plan_resolver or PlanResolver()
         self.quota_service = quota_service
+        self.settings = app_settings or settings
+        self.document_storage = DocumentStorage(self.settings.document_storage_path)
         self.logger = get_logger(__name__)
 
     async def upload(
@@ -55,22 +65,85 @@ class DocumentService:
                 kb_id=request.kb_id,
                 plan=plan,
             )
-        document = await self.indexing_service.create_document_record(
-            tenant_id,
-            request,
-        )
+        document = await self.indexing_service.create_document_record(tenant_id, request)
+        await self._enqueue_document(document.id)
+        return self._upload_response(document.id, document.kb_id)
+
+    async def upload_file(
+        self,
+        *,
+        tenant_id: str,
+        kb_id: str,
+        title: str | None,
+        filename: str,
+        mime_type: str | None,
+        file_bytes: bytes,
+    ) -> DocumentUploadResponse:
         try:
-            index_document_task.delay(document.id)
+            normalized_filename = self.document_storage.normalize_filename(filename)
+            self.document_storage.validate_component(tenant_id, label="tenant_id")
+        except ValueError as exc:
+            raise_app_error(ErrorCode.PARAM_ERROR, str(exc))
+        if not is_supported_document(normalized_filename, mime_type):
+            raise_app_error(
+                ErrorCode.PARAM_ERROR,
+                "unsupported document format: "
+                f"{Path(normalized_filename).suffix or normalized_filename}",
+                context={"filename": normalized_filename},
+            )
+
+        max_size = self.settings.document_max_size_mb * 1024 * 1024
+        if len(file_bytes) > max_size:
+            raise_app_error(
+                ErrorCode.PARAM_ERROR,
+                f"document exceeds the {self.settings.document_max_size_mb} MB size limit",
+                context={"filename": normalized_filename, "size": len(file_bytes)},
+            )
+
+        normalized_title = (title or Path(normalized_filename).stem).strip()
+        if not normalized_title:
+            raise_app_error(ErrorCode.PARAM_ERROR, "document title must not be blank")
+        if len(normalized_title) > 255:
+            raise_app_error(ErrorCode.PARAM_ERROR, "document title is too long")
+        source_type = source_type_for_filename(normalized_filename)
+        if source_type is None:
+            raise_app_error(ErrorCode.PARAM_ERROR, "unsupported document format")
+
+        await self._check_upload_quota(tenant_id=tenant_id, kb_id=kb_id)
+        document = await self.indexing_service.create_file_document_record(
+            tenant_id=tenant_id,
+            kb_id=kb_id,
+            title=normalized_title,
+            source_type=source_type,
+            source_filename=normalized_filename,
+        )
+        source_path = self.document_storage.path_for(
+            tenant_id=tenant_id,
+            document_id=document.id,
+            filename=normalized_filename,
+        )
+        source_path_committed = False
+        try:
+            await self.document_storage.write_bytes(source_path, file_bytes)
+            document.source_file_path = str(source_path)
+            document.source_filename = normalized_filename
+            await self.session.commit()
+            source_path_committed = True
+            await self.session.refresh(document)
+            await self._enqueue_document(document.id)
+        except DocumentIndexingError:
+            raise
         except Exception as exc:
+            if not source_path_committed:
+                await self.document_storage.remove(
+                    tenant_id=tenant_id,
+                    document_id=document.id,
+                    source_file_path=str(source_path),
+                )
             await self.indexing_service.mark_document_failed(document.id, str(exc))
             raise DocumentIndexingError(document.id, str(exc)) from exc
 
-        return DocumentUploadResponse(
-            document_id=document.id,
-            kb_id=document.kb_id,
-            status=int(DocumentStatus.PROCESSING),
-            chunk_count=0,
-        )
+        return self._upload_response(document.id, document.kb_id)
 
     async def get(self, document_id: str, *, tenant_id: str) -> DocumentDetailResponse:
         document = await self.document_repository.get_by_id_and_tenant(
@@ -88,6 +161,8 @@ class DocumentService:
             chunk_count=await self.document_repository.count_chunks(document_id=document.id),
             created_at=document.created_at,
             updated_at=document.updated_at,
+            source_type=getattr(document, "source_type", "text"),
+            source_filename=getattr(document, "source_filename", None),
         )
 
     async def delete(self, document_id: str, *, tenant_id: str) -> DocumentDeleteResponse:
@@ -109,6 +184,11 @@ class DocumentService:
         except Exception:
             await self.session.rollback()
             raise
+        await self.document_storage.remove(
+            tenant_id=tenant_id,
+            document_id=document.id,
+            source_file_path=getattr(document, "source_file_path", None),
+        )
         self.logger.info(
             "BUSINESS_EVENT | event=document_deleted | document_id=%s | tenant_id=%s",
             document.id,
@@ -121,6 +201,7 @@ class DocumentService:
         document_id: str,
         *,
         tenant_id: str,
+        reparse: bool = False,
     ) -> DocumentUploadResponse:
         document = await self.document_repository.get_by_id_and_tenant(
             document_id=document_id,
@@ -158,15 +239,39 @@ class DocumentService:
         except Exception:
             await self.session.rollback()
             raise
-        try:
-            index_document_task.delay(document.id)
-        except Exception as exc:
-            await self.indexing_service.mark_document_failed(document.id, str(exc))
-            raise DocumentIndexingError(document.id, str(exc)) from exc
+        if reparse and getattr(document, "source_file_path", None):
+            try:
+                index_document_task.delay(document.id, reparse=True)
+            except Exception as exc:
+                await self.indexing_service.mark_document_failed(document.id, str(exc))
+                raise DocumentIndexingError(document.id, str(exc)) from exc
+        else:
+            await self._enqueue_document(document.id)
 
+        return self._upload_response(document.id, document.kb_id)
+
+    async def _check_upload_quota(self, *, tenant_id: str, kb_id: str) -> None:
+        if self.quota_service is None:
+            return
+        plan = await self.plan_resolver.resolve_for_tenant_id(tenant_id)
+        await self.quota_service.check_upload_document(
+            tenant_id=tenant_id,
+            kb_id=kb_id,
+            plan=plan,
+        )
+
+    async def _enqueue_document(self, document_id: str) -> None:
+        try:
+            index_document_task.delay(document_id)
+        except Exception as exc:
+            await self.indexing_service.mark_document_failed(document_id, str(exc))
+            raise DocumentIndexingError(document_id, str(exc)) from exc
+
+    @staticmethod
+    def _upload_response(document_id: str, kb_id: str) -> DocumentUploadResponse:
         return DocumentUploadResponse(
-            document_id=document.id,
-            kb_id=document.kb_id,
+            document_id=document_id,
+            kb_id=kb_id,
             status=int(DocumentStatus.PROCESSING),
             chunk_count=0,
         )

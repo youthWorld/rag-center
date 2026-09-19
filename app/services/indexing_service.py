@@ -8,12 +8,13 @@ from app.core.logging import get_logger
 from app.models.document import Document, DocumentStatus
 from app.providers.embedding.base import EmbeddingProvider
 from app.providers.keyword_search.base import KeywordSearchProvider
-from app.providers.parsers.base import DocumentParser
-from app.providers.parsers.plain_text import PlainTextDocumentParser
+from app.providers.parsers.base import DocumentParser, ParsedDocument
+from app.providers.parsers.registry import source_type_for_filename
 from app.providers.vectorstores.base import VectorStore
 from app.repositories.document_repository import DocumentRepository
 from app.repositories.knowledge_base_repository import KnowledgeBaseRepository
 from app.schemas.document import DocumentUploadRequest
+from app.services.document_ingestion import prepare_document_content
 from app.utils.id_generator import generate_id
 from app.utils.markdown_splitter import MarkdownStructuredSplitter, SplitPiece
 from app.utils.text_splitter import TextSplitter
@@ -44,7 +45,7 @@ class IndexingService:
         self.embedding_provider = embedding_provider
         self.vector_store = vector_store
         self.keyword_search_provider = keyword_search_provider
-        self.document_parser = document_parser or PlainTextDocumentParser()
+        self.document_parser = document_parser
         self.document_repository = document_repository or (
             DocumentRepository(session) if session is not None else None
         )
@@ -73,6 +74,7 @@ class IndexingService:
             kb_id=knowledge_base.id,
             title=request.title,
             content=request.content,
+            source_type=source_type_for_filename(request.title) or "text",
         )
         await self.session.commit()
         await self.session.refresh(document)
@@ -85,7 +87,51 @@ class IndexingService:
         )
         return document
 
-    async def index_existing_document(self, document_id: str) -> int | None:
+    async def create_file_document_record(
+        self,
+        *,
+        tenant_id: str,
+        kb_id: str,
+        title: str,
+        source_type: str,
+        source_filename: str,
+    ) -> Document:
+        """Create a processing record whose content will be parsed by the worker."""
+
+        self._require_persistence()
+        knowledge_base = await self.knowledge_base_repository.get_by_id_and_tenant(
+            kb_id=kb_id,
+            tenant_id=tenant_id,
+        )
+        if knowledge_base is None:
+            raise KnowledgeBaseNotFoundError(kb_id)
+
+        document = await self.document_repository.create(
+            tenant_id=tenant_id,
+            kb_id=knowledge_base.id,
+            title=title,
+            content=None,
+            source_type=source_type,
+            source_filename=source_filename,
+        )
+        await self.session.commit()
+        await self.session.refresh(document)
+        self.logger.info(
+            "BUSINESS_EVENT | event=document_record_created | document_id=%s | kb_id=%s | "
+            "tenant_id=%s | source_type=%s",
+            document.id,
+            document.kb_id,
+            tenant_id,
+            source_type,
+        )
+        return document
+
+    async def index_existing_document(
+        self,
+        document_id: str,
+        *,
+        reparse: bool = False,
+    ) -> int | None:
         """Index a committed document and persist SUCCESS or FAILED state."""
 
         self._require_document_persistence()
@@ -94,7 +140,21 @@ class IndexingService:
             if document is None or document.status != int(DocumentStatus.PROCESSING):
                 return None
 
-            chunk_count = await self.index_document(document)
+            parsed_document = await prepare_document_content(
+                content=document.content,
+                file_path=getattr(document, "source_file_path", None),
+                filename=getattr(document, "source_filename", None) or document.title,
+                reparse=reparse,
+            )
+            if (
+                document.content != parsed_document.content
+                or document.source_type != parsed_document.source_type
+            ):
+                document.content = parsed_document.content
+                document.source_type = parsed_document.source_type
+                await self.session.commit()
+
+            chunk_count = await self.index_document(document, parsed_document=parsed_document)
             document.status = int(DocumentStatus.SUCCESS)
             document.error_message = None
             await self.session.commit()
@@ -133,7 +193,12 @@ class IndexingService:
         if self.keyword_search_provider is not None:
             await self.keyword_search_provider.delete_by_document_id(document_id)
 
-    async def index_document(self, document: Document) -> int:
+    async def index_document(
+        self,
+        document: Document,
+        *,
+        parsed_document: ParsedDocument | None = None,
+    ) -> int:
         """Chunk, embed, and persist one document's content.
 
         This method remains as the low-level compatibility entry point used by
@@ -146,11 +211,12 @@ class IndexingService:
             document.id,
             document.kb_id,
         )
-        parsed_content = self.document_parser.parse(
-            document.content,
+        parsed = parsed_document or ParsedDocument(
+            content=document.content or "",
             source_type=document.source_type or "text",
+            metadata={"parser": "stored_content"},
         )
-        pieces = self._split_document_content(document, parsed_content)
+        pieces = self._split_document_content(document, parsed.content, parsed.source_type)
         if not pieces:
             raise ValueError("document content cannot be empty")
 
@@ -159,7 +225,7 @@ class IndexingService:
         if len(embeddings) != len(contents):
             raise ValueError("embedding provider returned an unexpected number of vectors")
 
-        source_type = document.source_type or "text"
+        source_type = parsed.source_type or document.source_type or "text"
         chunks = [
             {
                 "id": generate_id(),
@@ -169,6 +235,7 @@ class IndexingService:
                 "title": document.title,
                 "content": piece.text,
                 "metadata": {
+                    **parsed.metadata,
                     "chunk_index": index,
                     "source_type": source_type,
                     "heading_path": piece.metadata.get("heading_path"),
@@ -195,8 +262,9 @@ class IndexingService:
         self,
         document: Document,
         content: str,
+        source_type: str | None = None,
     ) -> list[SplitPiece]:
-        if self._is_markdown_document(document):
+        if self._is_markdown_document(document, source_type=source_type):
             return self.markdown_splitter.split(content)
         return [
             SplitPiece(
@@ -207,9 +275,9 @@ class IndexingService:
         ]
 
     @staticmethod
-    def _is_markdown_document(document: Document) -> bool:
-        source_type = (document.source_type or "").lower()
-        if source_type in {"markdown", "md"}:
+    def _is_markdown_document(document: Document, *, source_type: str | None = None) -> bool:
+        source_type = (source_type or document.source_type or "").lower()
+        if source_type in {"markdown", "md", "docx", "pdf"}:
             return True
         title = (document.title or "").lower()
         return title.endswith((".md", ".markdown"))

@@ -25,8 +25,10 @@ import { Progress } from "../components/ui/progress";
 import { Textarea } from "../components/ui/textarea";
 import { getApiErrorCode, getApiErrorMessage } from "../lib/api";
 import { formatBytes, formatDate, createId } from "../lib/utils";
+import { isBinaryUploadFile, isSupportedUploadFile } from "../utils/file";
 import { useCreateKnowledgeBase } from "../hooks/use-knowledge-base";
 import { fetchKnowledgeBaseTree, uploadDocument } from "../services/knowledge-base";
+import { uploadDocumentFile } from "../services/document";
 import type { KnowledgeBase, UploadItem, UploadState } from "../types";
 
 const knowledgeBaseSchema = z.object({
@@ -143,18 +145,27 @@ export function WorkspacePage() {
   const progress = counts.total ? ((counts.success + counts.failed) / counts.total) * 100 : 0;
 
   const addFiles = (files: FileList | File[]) => {
-    const candidates = Array.from(files).map((file) => ({
-      id: `${file.name}-${file.size}-${file.lastModified}-${file.webkitRelativePath}`,
-      file,
-      relativePath: file.webkitRelativePath || file.name,
-      state: "queued" as const,
-    }));
+    const allFiles = Array.from(files);
+    const unsupportedFiles = allFiles.filter((file) => !isSupportedUploadFile(file));
+    const candidates = allFiles
+      .filter(isSupportedUploadFile)
+      .map((file) => ({
+        id: `${file.name}-${file.size}-${file.lastModified}-${file.webkitRelativePath}`,
+        file,
+        relativePath: file.webkitRelativePath || file.name,
+        state: "queued" as const,
+      }));
+
+    if (unsupportedFiles.length > 0) {
+      setToast(`已忽略 ${unsupportedFiles.length} 个不支持的文件，仅支持 md、txt、pdf、docx`);
+    }
+    if (candidates.length === 0) return;
 
     setUploadItems((current) => {
       const existingIds = new Set(current.map((item) => item.id));
       return [...current, ...candidates.filter((item) => !existingIds.has(item.id))];
     });
-    setToast(`${candidates.length} 个文件已加入上传队列`);
+    if (unsupportedFiles.length === 0) setToast(`${candidates.length} 个文件已加入上传队列`);
   };
 
   const updateUploadItem = (id: string, patch: Partial<UploadItem>) => {
@@ -175,21 +186,31 @@ export function WorkspacePage() {
     for (const item of queue) {
       updateUploadItem(item.id, { state: "uploading", message: undefined });
       try {
-        const content = await item.file.text();
-        if (!content.trim()) throw new Error("文件内容为空");
-        const response = await uploadDocument({
-          kb_id: knowledgeBase.kb_id,
-          title: item.file.name,
-          content,
-        });
+        let response: Awaited<ReturnType<typeof uploadDocument>>;
+        if (isBinaryUploadFile(item.file)) {
+          const formData = new FormData();
+          formData.append("file", item.file);
+          formData.append("kb_id", knowledgeBase.kb_id);
+          response = await uploadDocumentFile(formData);
+        } else {
+          const content = await item.file.text();
+          if (!content.trim()) throw new Error("文件内容为空");
+          response = await uploadDocument({
+            kb_id: knowledgeBase.kb_id,
+            title: item.file.name,
+            content,
+          });
+        }
         updateUploadItem(item.id, {
           state: "success",
           documentId: response.document_id,
           chunkCount: response.chunk_count,
           message:
             response.status === 3
-              ? "已提交，正在后台索引"
-              : `已完成索引，共 ${response.chunk_count} 个片段`,
+              ? isBinaryUploadFile(item.file)
+                ? "已提交，正在后台解析和索引"
+                : "已提交，正在后台索引"
+             : `已完成索引，共 ${response.chunk_count} 个片段`,
         });
       } catch (error) {
         const message = getApiErrorMessage(error);
@@ -318,7 +339,7 @@ export function WorkspacePage() {
                   </div>
                   <h3 className="mt-4 text-sm font-bold">拖拽文件到这里</h3>
                   <p className="mx-auto mt-2 max-w-[430px] text-xs leading-5 text-muted">
-                    支持一次选择多个文件，也可以直接选择文件夹。文件会在队列中逐个处理。
+                    支持 md、txt、pdf、docx，可一次选择多个文件或直接选择文件夹。PDF 和 DOCX 会在后台解析。
                   </p>
                   <div className="mt-5 flex flex-wrap justify-center gap-2.5">
                     <Button type="button" variant="secondary" size="sm" onClick={() => fileInputRef.current?.click()}>
@@ -335,6 +356,7 @@ export function WorkspacePage() {
                     className="hidden"
                     type="file"
                     multiple
+                    accept=".md,.txt,.pdf,.docx"
                     onChange={(event) => {
                       if (event.target.files) addFiles(event.target.files);
                       event.target.value = "";
@@ -345,6 +367,7 @@ export function WorkspacePage() {
                     className="hidden"
                     type="file"
                     multiple
+                    accept=".md,.txt,.pdf,.docx"
                     onChange={(event) => {
                       if (event.target.files) addFiles(event.target.files);
                       event.target.value = "";

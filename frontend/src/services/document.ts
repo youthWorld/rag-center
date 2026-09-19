@@ -15,7 +15,17 @@ export async function reindexDocument(documentId: string) {
   return response.data.data;
 }
 
+export async function uploadDocumentFile(formData: FormData) {
+  const response = await api.post<ApiEnvelope<DocumentUploadResponse>>(
+    "/api/v1/documents/upload",
+    formData,
+    { headers: { "Content-Type": undefined } },
+  );
+  return response.data.data;
+}
+
 export const documentService = {
   deleteDocument,
   reindexDocument,
+  uploadDocumentFile,
 };

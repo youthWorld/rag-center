@@ -6,7 +6,7 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
     ports:
-      - "5432:5432"
+      - "15433:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
       - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/001-init.sql:ro
@@ -34,7 +34,7 @@ services:
   redis:
     image: redis:7-alpine
     ports:
-      - "6379:6379"
+      - "16379:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -64,12 +64,12 @@ services:
         condition: service_healthy
     environment:
       DATABASE_URL: postgresql://postgres:postgres@langfuse-db:5432/langfuse
-      NEXTAUTH_URL: http://localhost:3000
+      NEXTAUTH_URL: http://localhost:13000
       NEXTAUTH_SECRET: ${LANGFUSE_NEXTAUTH_SECRET:-local-langfuse-nextauth-secret}
       SALT: ${LANGFUSE_SALT:-local-langfuse-salt}
       ENCRYPTION_KEY: ${LANGFUSE_ENCRYPTION_KEY:-0000000000000000000000000000000000000000000000000000000000000000}
     ports:
-      - "3000:3000"
+      - "13000:3000"
 
 volumes:
   postgres-data:

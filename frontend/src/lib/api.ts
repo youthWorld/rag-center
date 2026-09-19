@@ -32,6 +32,9 @@ function isUnauthorizedEnvelope(value: unknown): value is { code: number } {
 api.interceptors.request.use((config) => {
   const apiKey = import.meta.env.API_KEY?.trim();
   if (apiKey) config.headers.Authorization = `Bearer ${apiKey}`;
+  if (typeof FormData !== "undefined" && config.data instanceof FormData) {
+    delete config.headers["Content-Type"];
+  }
   return config;
 });
 

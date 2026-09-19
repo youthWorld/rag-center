@@ -18,13 +18,17 @@ _ResultT = TypeVar("_ResultT")
 
 
 @celery_app.task(bind=True, max_retries=2, default_retry_delay=10)
-def index_document_task(self, document_id: str) -> dict[str, Any] | None:
+def index_document_task(
+    self,
+    document_id: str,
+    reparse: bool = False,
+) -> dict[str, Any] | None:
     """Run indexing in a worker-owned event loop and database session."""
 
     try:
         # Celery invokes synchronous task functions, so each worker task owns an
         # isolated event loop for the async SQLAlchemy and provider calls.
-        return _run_async(_index_document(document_id))
+        return _run_async(_index_document(document_id, reparse=reparse))
     except Exception as exc:
         if _is_retryable(exc) and self.request.retries < self.max_retries:
             _run_async(_reset_document_for_retry(document_id))
@@ -32,11 +36,15 @@ def index_document_task(self, document_id: str) -> dict[str, Any] | None:
         raise
 
 
-async def _index_document(document_id: str) -> dict[str, Any] | None:
+async def _index_document(
+    document_id: str,
+    *,
+    reparse: bool = False,
+) -> dict[str, Any] | None:
     async with session_factory() as session:
         service = build_indexing_service(session, settings)
         try:
-            result = await service.index_existing_document(document_id)
+            result = await service.index_existing_document(document_id, reparse=reparse)
             if result is None:
                 return None
             return {
