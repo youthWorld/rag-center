@@ -1,5 +1,18 @@
 import type { RetrieveProfile, TenantPlan } from "../types";
 
+export const multiKbPlanLimits: Record<TenantPlan, number> = {
+  free: 1,
+  standard: 3,
+  pro: 5,
+};
+
+export function getMaxKnowledgeBasesPerRetrieve(
+  plan: TenantPlan,
+  configuredLimit?: number,
+) {
+  return configuredLimit ?? multiKbPlanLimits[plan];
+}
+
 export const tenantPlanMeta: Record<TenantPlan, { label: string; className: string }> = {
   free: {
     label: "免费",

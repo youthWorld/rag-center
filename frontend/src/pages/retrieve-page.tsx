@@ -3,6 +3,7 @@ import {
   CheckCircle2,
   ChevronDown,
   Clock3,
+  Database,
   FileSearch,
   Gauge,
   LoaderCircle,
@@ -13,7 +14,7 @@ import {
   Star,
   TriangleAlert,
 } from "lucide-react";
-import { useEffect, useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useQuery } from "@tanstack/react-query";
@@ -24,12 +25,18 @@ import { Card } from "../components/ui/card";
 import { HelpTooltip } from "../components/ui/help-tooltip";
 import { Input } from "../components/ui/input";
 import { Textarea } from "../components/ui/textarea";
-import { getApiErrorMessage } from "../lib/api";
-import { getProfileUpgradeMessage, tenantPlanMeta } from "../lib/tenant-plan";
+import { getApiErrorCode, getApiErrorMessage } from "../lib/api";
+import {
+  getMaxKnowledgeBasesPerRetrieve,
+  getProfileUpgradeMessage,
+  tenantPlanMeta,
+} from "../lib/tenant-plan";
 import { authService } from "../services/authService";
+import { knowledgeBaseService } from "../services/knowledge-base";
 import { ragService, type RetrievePayload } from "../services/rag";
 import type {
   AuthMeData,
+  KnowledgeBaseTenantTree,
   QueryProcessingMetadata,
   RagRetrieveResponse,
   RetrieveProfile,
@@ -52,7 +59,8 @@ const retrievalProfiles: Array<{ value: RetrieveProfile; label: string; descript
 
 export function RetrievePage() {
   const [searchParams] = useSearchParams();
-  const [kbId, setKbId] = useState(() => searchParams.get("kb_id") ?? "");
+  const initialKbId = searchParams.get("kb_id")?.trim() ?? "";
+  const [selectedKbIds, setSelectedKbIds] = useState<string[]>(() => (initialKbId ? [initialKbId] : []));
   const [query, setQuery] = useState("");
   const [profile, setProfile] = useState<RetrieveProfile>("balanced");
   const [topK, setTopK] = useState("5");
@@ -77,7 +85,19 @@ export function RetrievePage() {
     queryKey: ["auth-me"],
     queryFn: authService.fetchAuthMe,
   });
+  const knowledgeBaseTreeQuery = useQuery<KnowledgeBaseTenantTree[]>({
+    queryKey: ["knowledge-base-tree"],
+    queryFn: () => knowledgeBaseService.fetchTree(),
+  });
   const tenantInfo = authQuery.data;
+  const knowledgeBases = useMemo(
+    () => knowledgeBaseTreeQuery.data?.flatMap((tenant) => tenant.knowledge_bases) ?? [],
+    [knowledgeBaseTreeQuery.data],
+  );
+  const maxKbPerRetrieve = tenantInfo
+    ? getMaxKnowledgeBasesPerRetrieve(tenantInfo.plan, tenantInfo.limits.max_kb_per_retrieve)
+    : 5;
+  const overPlanLimit = selectedKbIds.length > maxKbPerRetrieve;
   const visibleRetrievalModes = tenantInfo?.features.hybrid_allowed
     ? retrievalModes
     : retrievalModes.filter((item) => item.value !== "hybrid");
@@ -97,14 +117,29 @@ export function RetrievePage() {
     if (!tenantInfo.features.query_rewrite_allowed) setQueryRewriteEnabled(false);
   }, [tenantInfo]);
 
+  useEffect(() => {
+    if (knowledgeBases.length === 0) return;
+    const availableIds = new Set(knowledgeBases.map((knowledgeBase) => knowledgeBase.kb_id));
+    setSelectedKbIds((current) => {
+      const validIds = current.filter((kbId) => availableIds.has(kbId));
+      return validIds.length > 0 ? validIds : [knowledgeBases[0].kb_id];
+    });
+  }, [knowledgeBases]);
+
+  const toggleKnowledgeBase = (kbId: string) => {
+    setSelectedKbIds((current) =>
+      current.includes(kbId) ? current.filter((currentId) => currentId !== kbId) : [...current, kbId],
+    );
+    setError(null);
+  };
+
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setError(null);
 
-    const normalizedKbId = kbId.trim();
     const normalizedQuery = query.trim();
-    if (!normalizedKbId || !normalizedQuery) {
-      setError("kb_id 和 query 都是必填项。");
+    if (selectedKbIds.length === 0 || !normalizedQuery) {
+      setError(selectedKbIds.length === 0 ? "请选择至少一个知识库。" : "query 是必填项。");
       return;
     }
 
@@ -122,7 +157,7 @@ export function RetrievePage() {
     }
 
     const payload: RetrievePayload = {
-      kb_id: normalizedKbId,
+      ...(selectedKbIds.length === 1 ? { kb_id: selectedKbIds[0] } : { kb_ids: selectedKbIds }),
       user_id: "debug_user",
       query: normalizedQuery,
       profile,
@@ -174,7 +209,11 @@ export function RetrievePage() {
     try {
       setResult(await ragService.retrieve(payload));
     } catch (requestError) {
-      setError(getApiErrorMessage(requestError));
+      setError(
+        getApiErrorCode(requestError) === 20013
+          ? `当前套餐最多支持 ${maxKbPerRetrieve} 个库联合检索，请减少勾选数量。`
+          : getApiErrorMessage(requestError),
+      );
     } finally {
       setIsRunning(false);
     }
@@ -270,12 +309,75 @@ export function RetrievePage() {
           </div>
 
           <div className="rounded-xl border border-line bg-paper/70 p-4 sm:p-5">
-            <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-muted">检索范围</p>
-            <div className="mt-4 grid gap-4">
-              <FieldRow label="kb_id" required>
-                <Input value={kbId} onChange={(event) => setKbId(event.target.value)} placeholder="知识库 ID" />
-              </FieldRow>
+            <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-start">
+              <div>
+                <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-muted">检索范围</p>
+                <p className="mt-2 text-xs leading-5 text-muted">选择一个或多个知识库，跨库结果会在服务端统一融合排序。</p>
+              </div>
+              <Badge className="w-fit border-moss/15 bg-moss/8 text-moss">
+                已选 {selectedKbIds.length} / {knowledgeBases.length || "—"}
+              </Badge>
             </div>
+
+            {knowledgeBaseTreeQuery.isLoading ? (
+              <div className="mt-4 flex items-center gap-2 rounded-xl border border-dashed border-line bg-white px-4 py-5 text-xs text-muted" role="status">
+                <LoaderCircle size={15} className="animate-spin text-moss" />
+                正在读取当前租户的知识库...
+              </div>
+            ) : knowledgeBaseTreeQuery.isError ? (
+              <div className="mt-4 flex items-start gap-2 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-xs leading-5 text-danger" role="alert">
+                <AlertCircle size={15} className="mt-0.5 shrink-0" />
+                <span>{getApiErrorMessage(knowledgeBaseTreeQuery.error)}</span>
+              </div>
+            ) : knowledgeBases.length === 0 ? (
+              <div className="mt-4 rounded-xl border border-dashed border-line bg-white px-4 py-5 text-xs text-muted">
+                当前租户还没有可检索的知识库。
+              </div>
+            ) : (
+              <div className="mt-4 grid gap-2 md:grid-cols-2 xl:grid-cols-3" role="group" aria-label="检索范围">
+                {knowledgeBases.map((knowledgeBase) => {
+                  const checked = selectedKbIds.includes(knowledgeBase.kb_id);
+                  return (
+                    <label
+                      key={knowledgeBase.kb_id}
+                      className={`flex min-w-0 cursor-pointer items-start gap-3 rounded-xl border px-3.5 py-3 transition-colors ${
+                        checked
+                          ? "border-moss/45 bg-moss/8 shadow-sm"
+                          : "border-line bg-white hover:border-moss/35 hover:bg-moss/5"
+                      }`}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => toggleKnowledgeBase(knowledgeBase.kb_id)}
+                        className="mt-1 h-4 w-4 shrink-0 accent-[#1e725c]"
+                        aria-label={`选择 ${knowledgeBase.name}`}
+                      />
+                      <span className="min-w-0">
+                        <span className="flex items-center gap-2 text-sm font-bold text-ink">
+                          <Database size={15} className={checked ? "shrink-0 text-moss" : "shrink-0 text-muted"} />
+                          <span className="truncate">{knowledgeBase.name}</span>
+                        </span>
+                        <code className="mt-1 block truncate font-mono text-[10px] text-muted" title={knowledgeBase.kb_id}>
+                          {knowledgeBase.kb_id}
+                        </code>
+                      </span>
+                    </label>
+                  );
+                })}
+              </div>
+            )}
+
+            {tenantInfo && overPlanLimit && (
+              <div className="mt-4 flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 px-3.5 py-3 text-xs leading-5 text-amber-800" role="alert">
+                <TriangleAlert size={15} className="mt-0.5 shrink-0" />
+                <span>当前套餐最多支持 {maxKbPerRetrieve} 个库联合检索，请减少勾选数量。</span>
+              </div>
+            )}
+
+            {knowledgeBases.length > 0 && selectedKbIds.length === 0 && (
+              <p className="mt-3 text-xs font-semibold text-danger">请选择至少一个知识库。</p>
+            )}
           </div>
 
           <div>
@@ -654,6 +756,7 @@ const retrievalSourceLabels: Record<RetrievedChunk["retrieval_source"], string> 
 
 function RetrievedChunkRow({ chunk, index }: { chunk: RetrievedChunk; index: number }) {
   const chunkType = getChunkTypeLabel(chunk.metadata?.chunk_type);
+  const sourceLabel = chunk.kb_name || (chunk.kb_id ? chunk.kb_id.slice(0, 8) : "未知知识库");
 
   return (
     <article className="overflow-hidden rounded-xl border border-line bg-white">
@@ -661,7 +764,16 @@ function RetrievedChunkRow({ chunk, index }: { chunk: RetrievedChunk; index: num
         <aside className="min-w-0 border-b border-line bg-paper/65 p-5 sm:p-6 lg:border-b-0 lg:border-r">
           <div className="flex items-center justify-between gap-3">
             <Badge className="border-ember/20 bg-ember/8 text-ember">#{index + 1}</Badge>
-            <Badge className="border-line bg-white text-muted">{retrievalSourceLabels[chunk.retrieval_source]}</Badge>
+            <div className="flex min-w-0 items-center justify-end gap-1.5">
+              <Badge
+                className={`${getKnowledgeBaseBadgeClass(chunk.kb_id)} max-w-[min(55vw,220px)] truncate`}
+                title={chunk.kb_id ?? sourceLabel}
+              >
+                <Database size={12} />
+                <span className="truncate">{sourceLabel}</span>
+              </Badge>
+              <Badge className="border-line bg-white text-muted">{retrievalSourceLabels[chunk.retrieval_source]}</Badge>
+            </div>
           </div>
           <h4 className="mt-4 break-words text-[15px] font-bold leading-6 text-ink">{chunk.title}</h4>
 
@@ -804,6 +916,18 @@ function getChunkTypeLabel(value: unknown) {
   );
 }
 
+function getKnowledgeBaseBadgeClass(kbId?: string | null) {
+  const palette = [
+    "border-sky-200 bg-sky-50 text-sky-700",
+    "border-violet-200 bg-violet-50 text-violet-700",
+    "border-amber-200 bg-amber-50 text-amber-700",
+    "border-rose-200 bg-rose-50 text-rose-700",
+  ];
+  if (!kbId) return "border-line bg-paper text-muted";
+  const hash = Array.from(kbId).reduce((total, character) => total + character.charCodeAt(0), 0);
+  return palette[hash % palette.length];
+}
+
 function normalizeChunkContent(content: string, chunkType: unknown) {
   const trimmed = content.trim();
   if (!trimmed || (chunkType !== "table" && chunkType !== "table_part")) return trimmed;
@@ -849,6 +973,8 @@ function isMarkdownTableSeparator(line: string) {
 
 function RunSummary({ result, isRunning }: { result: RagRetrieveResponse | null; isRunning: boolean }) {
   const queryProcessing = result?.metadata.query_processing;
+  const retrieval = result?.metadata.retrieval;
+  const kbCount = retrieval?.multi_kb ? retrieval.kb_count ?? result?.kb_ids?.length ?? 1 : 1;
 
   return (
     <section className="rounded-2xl border border-line bg-white shadow-soft">
@@ -873,10 +999,11 @@ function RunSummary({ result, isRunning }: { result: RagRetrieveResponse | null;
         <div className="px-5 py-8 text-sm text-muted sm:px-6">完成一次检索后，这里会显示服务端耗时、召回数量和降级状态。</div>
       ) : (
         <div className="space-y-4 px-5 py-5 sm:px-6">
-          <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+          <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
             <SummaryOverview label="检索模式" code="mode" value={result.metadata.retrieval?.mode ?? "—"} />
             <SummaryOverview label="结果上限" code="top_k" value={result.metadata.top_k ?? "—"} suffix="个" />
-            <SummaryOverview label="最终返回" code="count" value={result.retrieved_chunks.length} suffix="个" />
+            <SummaryOverview label="联查范围" code="kb_count" value={kbCount} suffix="个库" />
+            <SummaryOverview label="融合方式" code="fusion" value={retrieval?.fusion ?? "none"} />
             <SummaryOverview
               label="服务端耗时"
               code="latency"

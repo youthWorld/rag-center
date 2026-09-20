@@ -99,11 +99,21 @@ def raise_app_error(
 
 
 class KnowledgeBaseNotFoundError(AppError):
-    def __init__(self, kb_id: str | None = None) -> None:
+    def __init__(
+        self,
+        kb_id: str | None = None,
+        *,
+        missing_kb_id: str | None = None,
+    ) -> None:
+        context: dict[str, Any] = {}
+        if kb_id:
+            context["kb_id"] = kb_id
+        if missing_kb_id:
+            context["missing_kb_id"] = missing_kb_id
         super().__init__(
             "knowledge base not found",
             code=ErrorCode.NOT_FOUND,
-            context={"kb_id": kb_id} if kb_id else None,
+            context=context or None,
         )
 
 

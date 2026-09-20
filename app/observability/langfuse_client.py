@@ -73,6 +73,7 @@ class RetrieveObservability:
         settings: Settings,
         tenant_id: str,
         kb_id: str,
+        kb_ids: list[str] | None = None,
         user_id: str,
         profile: str,
         plan: str,
@@ -81,6 +82,7 @@ class RetrieveObservability:
         self.settings = settings
         self.tenant_id = tenant_id
         self.kb_id = kb_id
+        self.kb_ids = list(kb_ids) if kb_ids is not None else [kb_id]
         self.user_id = user_id
         self.profile = profile
         self.plan = plan
@@ -94,17 +96,20 @@ class RetrieveObservability:
         if self.client is None:
             return self
         try:
+            metadata = {
+                "tenant_id": self.tenant_id,
+                "kb_id": self.kb_id,
+                "user_id": self.user_id,
+                "profile": self.profile,
+                "plan": self.plan,
+            }
+            if len(self.kb_ids) > 1:
+                metadata["kb_ids"] = self.kb_ids
             self.trace = self.client.trace(
                 name="rag_retrieve",
                 user_id=self.user_id,
                 input={"query": self.raw_query},
-                metadata={
-                    "tenant_id": self.tenant_id,
-                    "kb_id": self.kb_id,
-                    "user_id": self.user_id,
-                    "profile": self.profile,
-                    "plan": self.plan,
-                },
+                metadata=metadata,
             )
             trace_id = getattr(self.trace, "id", None)
             self.trace_id = str(trace_id) if trace_id else None

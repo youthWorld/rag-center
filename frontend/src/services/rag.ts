@@ -10,7 +10,8 @@ import type {
 } from "../types";
 
 export type RetrievePayload = {
-  kb_id: string;
+  kb_id?: string;
+  kb_ids?: string[];
   user_id: string;
   query: string;
   profile: RetrieveProfile;

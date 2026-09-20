@@ -66,6 +66,30 @@ def _as_text(value: Any) -> str:
     return ""
 
 
+def _as_text_list(value: Any) -> list[str]:
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return []
+        try:
+            decoded = json.loads(text)
+        except json.JSONDecodeError:
+            return [text]
+        return _as_text_list(decoded)
+
+    if not isinstance(value, (list, tuple)):
+        return []
+
+    values: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        text = _as_text(item)
+        if text and text not in seen:
+            values.append(text)
+            seen.add(text)
+    return values
+
+
 def _load_json(path: Path) -> Any:
     try:
         return json.loads(path.read_text(encoding="utf-8"))
@@ -87,6 +111,14 @@ def load_dataset(path: Path) -> dict[str, Any]:
     return payload
 
 
+def _case_kb_ids(case: dict[str, Any]) -> list[str]:
+    kb_ids = _as_text_list(case.get("kb_ids"))
+    if kb_ids:
+        return kb_ids
+    kb_id = _as_text(case.get("kb_id"))
+    return [kb_id] if kb_id else []
+
+
 def prepare_cases(dataset: dict[str, Any]) -> tuple[list[dict[str, Any]], int]:
     default_kb_id = _as_text(dataset.get("kb_id"))
     prepared: list[dict[str, Any]] = []
@@ -102,13 +134,15 @@ def prepare_cases(dataset: dict[str, Any]) -> tuple[list[dict[str, Any]], int]:
         question = _as_text(raw_case.get("question"))
         if not question:
             raise EvalError(f"case {case_id} has no question")
-        kb_id = _as_text(raw_case.get("kb_id")) or default_kb_id
-        if not kb_id:
-            raise EvalError(f"case {case_id} has no kb_id")
+        kb_ids = _case_kb_ids(raw_case)
+        if not kb_ids and default_kb_id:
+            kb_ids = [default_kb_id]
+        if not kb_ids:
+            raise EvalError(f"case {case_id} has no kb_id or kb_ids")
         prepared.append(
             {
                 "id": case_id,
-                "kb_id": kb_id,
+                "kb_ids": kb_ids,
                 "question": question,
                 "ground_truth": ground_truth,
             }
@@ -135,12 +169,18 @@ def retrieve_case(
     case: dict[str, Any],
     profile: str,
 ) -> list[str]:
+    kb_ids = _case_kb_ids(case)
+    if not kb_ids:
+        raise EvalError(f"case {case['id']} has no kb_id or kb_ids")
     payload = {
-        "kb_id": case["kb_id"],
         "user_id": EVAL_USER_ID,
         "query": case["question"],
         "profile": profile,
     }
+    if len(kb_ids) > 1:
+        payload["kb_ids"] = kb_ids
+    else:
+        payload["kb_id"] = kb_ids[0]
     try:
         response = client.post(
             f"{base_url.rstrip('/')}/api/v1/rag/retrieve",
@@ -335,6 +375,7 @@ def evaluate_with_ragas(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "question": row["question"],
                 "context_precision": _metric_value(record, "context_precision"),
                 "context_recall": _metric_value(record, "context_recall"),
+                "multi_kb": len(_case_kb_ids(row)) > 1,
             }
         )
     return scored
@@ -353,9 +394,16 @@ def build_report(
     scored_cases: list[dict[str, Any]],
     skipped: int,
 ) -> dict[str, Any]:
+    report_cases: list[dict[str, Any]] = []
+    for case in scored_cases:
+        report_case = dict(case)
+        if not isinstance(report_case.get("multi_kb"), bool):
+            report_case["multi_kb"] = len(_case_kb_ids(report_case)) > 1
+        report_cases.append(report_case)
+
     low_recall_cases = [
         case
-        for case in scored_cases
+        for case in report_cases
         if case["context_recall"] is not None
         and case["context_recall"] <= LOW_RECALL_THRESHOLD
     ]
@@ -366,16 +414,16 @@ def build_report(
         "profile": profile,
         "generated_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
         "summary": {
-            "evaluated": len(scored_cases),
+            "evaluated": len(report_cases),
             "skipped": skipped,
             "context_precision": _average(
-                [case["context_precision"] for case in scored_cases]
+                [case["context_precision"] for case in report_cases]
             ),
             "context_recall": _average(
-                [case["context_recall"] for case in scored_cases]
+                [case["context_recall"] for case in report_cases]
             ),
         },
-        "cases": scored_cases,
+        "cases": report_cases,
         "low_context_recall": low_recall_cases,
     }
 

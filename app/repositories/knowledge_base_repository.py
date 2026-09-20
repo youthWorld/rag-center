@@ -40,6 +40,25 @@ class KnowledgeBaseRepository:
         result = await self.session.execute(statement)
         return result.scalar_one_or_none()
 
+    async def get_by_ids(
+        self,
+        *,
+        kb_ids: list[str],
+        tenant_id: str,
+    ) -> list[KnowledgeBase]:
+        if not kb_ids:
+            return []
+        statement = select(KnowledgeBase).where(
+            KnowledgeBase.id.in_(kb_ids),
+            KnowledgeBase.tenant_id == tenant_id,
+        )
+        result = await self.session.execute(statement)
+        knowledge_bases = {
+            knowledge_base.id: knowledge_base
+            for knowledge_base in result.scalars()
+        }
+        return [knowledge_bases[kb_id] for kb_id in kb_ids if kb_id in knowledge_bases]
+
     async def get_by_id_and_tenant(self, *, kb_id: str, tenant_id: str) -> KnowledgeBase | None:
         return await self.get_by_id(kb_id=kb_id, tenant_id=tenant_id)
 

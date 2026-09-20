@@ -69,12 +69,58 @@ def test_collect_cases_exports_only_low_feedback_and_trace_metadata() -> None:
             "id": "lf_trace-low",
             "question": "退款审核需要多长时间？",
             "ground_truth": "",
-            "kb_id": "kb-a",
+            "kb_ids": ["kb-a"],
             "source": {
                 "trace_id": "trace-low",
                 "feedback_score": 2,
                 "feedback_comment": "结果不相关",
                 "log_id": "log-a",
+            },
+        }
+    ]
+
+
+def test_collect_cases_prefers_multi_kb_metadata_and_filters_by_membership() -> None:
+    class MultiKBAPI:
+        def list_scores(self, *, max_score: float, from_timestamp):
+            assert max_score == 3
+            assert from_timestamp is None
+            return [
+                {
+                    "name": "user_feedback",
+                    "value": 2,
+                    "traceId": "trace-multi",
+                },
+                {
+                    "name": "user_feedback",
+                    "value": 2,
+                    "traceId": "trace-other",
+                },
+            ]
+
+        def get_trace(self, trace_id: str):
+            if trace_id == "trace-multi":
+                return {
+                    "input": {"query": "跨库问题"},
+                    "metadata": '{"kbIds": ["kb-a", "kb-b"]}',
+                }
+            return {
+                "input": {"query": "单库问题"},
+                "metadata": {"kb_id": "kb-c"},
+            }
+
+    cases = collect_cases(MultiKBAPI(), max_score=3, kb_id="kb-b")
+
+    assert cases == [
+        {
+            "id": "lf_trace-multi",
+            "question": "跨库问题",
+            "ground_truth": "",
+            "kb_ids": ["kb-a", "kb-b"],
+            "source": {
+                "trace_id": "trace-multi",
+                "feedback_score": 2,
+                "feedback_comment": "",
             },
         }
     ]
@@ -216,6 +262,40 @@ def test_retrieve_case_sends_expected_contract_and_returns_contexts() -> None:
     }
 
 
+def test_retrieve_case_sends_multi_kb_contract() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json={"code": 0, "data": {"retrieved_chunks": []}},
+            request=request,
+        )
+
+    case = {
+        "id": "case-multi",
+        "kb_ids": ["kb-a", "kb-b"],
+        "question": "跨库问题",
+        "ground_truth": "标准答案",
+    }
+    with httpx.Client(transport=httpx.MockTransport(handler), trust_env=False) as client:
+        retrieve_case(
+            client,
+            base_url="http://rag.local",
+            api_key="rk_live_test",
+            case=case,
+            profile="balanced",
+        )
+
+    assert json.loads(requests[0].content) == {
+        "kb_ids": ["kb-a", "kb-b"],
+        "user_id": "eval_runner",
+        "query": "跨库问题",
+        "profile": "balanced",
+    }
+
+
 def test_retrieve_case_reports_api_errors_without_raw_traceback() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
@@ -256,7 +336,7 @@ def test_prepare_cases_skips_empty_ground_truth() -> None:
     assert cases == [
         {
             "id": "ready",
-            "kb_id": "kb-a",
+            "kb_ids": ["kb-a"],
             "question": "已补答案",
             "ground_truth": "答案",
         }
@@ -312,6 +392,7 @@ def test_evaluate_with_ragas_uses_canonical_columns_and_two_metrics(monkeypatch)
         {
             "id": "case-2",
             "question": "问题二",
+            "kb_ids": ["kb-a", "kb-b"],
             "contexts": ["上下文二"],
             "ground_truth": "答案二",
         },
@@ -335,6 +416,8 @@ def test_evaluate_with_ragas_uses_canonical_columns_and_two_metrics(monkeypatch)
     assert captured["kwargs"]["metrics"] == ["precision", "recall"]
     assert captured["kwargs"]["llm"] == "judge"
     assert scored[0]["context_recall"] == 0.4
+    assert scored[0]["multi_kb"] is False
+    assert scored[1]["multi_kb"] is True
 
 
 def test_build_report_averages_metrics_and_lists_low_recall() -> None:
@@ -366,9 +449,10 @@ def test_build_report_averages_metrics_and_lists_low_recall() -> None:
         "context_recall": 0.65,
     }
     assert [case["id"] for case in report["low_context_recall"]] == ["case-1"]
+    assert [case["multi_kb"] for case in report["cases"]] == [False, False]
 
 
-def test_build_dataset_moves_kb_id_to_cases_when_multiple_kbs() -> None:
+def test_build_dataset_keeps_case_kb_ids_when_multiple_kbs() -> None:
     dataset = build_dataset(
         "feedback",
         cases=[
@@ -379,5 +463,7 @@ def test_build_dataset_moves_kb_id_to_cases_when_multiple_kbs() -> None:
     )
 
     assert dataset["kb_id"] == ""
-    assert dataset["cases"][0]["kb_id"] == "kb-a"
-    assert dataset["cases"][1]["kb_id"] == "kb-b"
+    assert dataset["cases"][0]["kb_ids"] == ["kb-a"]
+    assert dataset["cases"][1]["kb_ids"] == ["kb-b"]
+    assert "kb_id" not in dataset["cases"][0]
+    assert "kb_id" not in dataset["cases"][1]

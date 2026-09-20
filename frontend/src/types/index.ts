@@ -65,6 +65,7 @@ export type AuthMeData = {
     retrieve_qps: number;
     retrieve_daily: number;
     max_kb: number;
+    max_kb_per_retrieve?: number;
     max_documents_per_kb: number;
     max_processing_documents: number;
   };
@@ -138,6 +139,8 @@ export type QueryProcessingMetadata = {
 export type RetrievedChunk = {
   document_id: string;
   chunk_id: string;
+  kb_id?: string | null;
+  kb_name?: string | null;
   title: string;
   content: string;
   score: number;
@@ -162,6 +165,11 @@ export type RetrievalMetadata = {
   vector_store?: string;
   retrieval?: {
     mode?: RetrievalMode;
+    multi_kb?: boolean;
+    kb_count?: number;
+    per_kb_top_k?: number;
+    fusion?: string | null;
+    rrf_k?: number | null;
     vector_top_k?: number;
     bm25_top_k?: number;
     vector_count?: number;
@@ -196,6 +204,7 @@ export type RetrievalMetadata = {
 export type RagRetrieveResponse = {
   query: string;
   kb_id: string;
+  kb_ids?: string[];
   retrieved_chunks: RetrievedChunk[];
   metadata: RetrievalMetadata;
 };

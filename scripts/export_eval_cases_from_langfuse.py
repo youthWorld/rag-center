@@ -98,6 +98,34 @@ def _as_text(value: Any) -> str | None:
     return str(value).strip() or None
 
 
+def _as_text_list(value: Any) -> list[str]:
+    """Normalize a JSON/list-like value to unique, non-empty text values."""
+
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return []
+        try:
+            decoded = json.loads(text)
+        except json.JSONDecodeError:
+            return [text]
+        if decoded is value:
+            return [text]
+        return _as_text_list(decoded)
+
+    if not isinstance(value, (list, tuple)):
+        return []
+
+    values: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        text = _as_text(item)
+        if text is not None and text not in seen:
+            values.append(text)
+            seen.add(text)
+    return values
+
+
 def _as_int(value: Any) -> int | None:
     if isinstance(value, bool) or value is None:
         return None
@@ -267,9 +295,13 @@ def _trace_query(trace: dict[str, Any]) -> str | None:
     return _as_text(trace_input)
 
 
-def _trace_kb_id(trace: dict[str, Any]) -> str | None:
+def _trace_kb_ids(trace: dict[str, Any]) -> list[str]:
     metadata = _trace_metadata(trace)
-    return _as_text(_field(metadata, "kb_id", "kbId"))
+    kb_ids = _as_text_list(_field(metadata, "kb_ids", "kbIds"))
+    if kb_ids:
+        return kb_ids
+    kb_id = _as_text(_field(metadata, "kb_id", "kbId"))
+    return [kb_id] if kb_id is not None else []
 
 
 def _trace_log_id(trace: dict[str, Any]) -> str | None:
@@ -286,7 +318,7 @@ def _build_case(
     trace: dict[str, Any],
     *,
     trace_id: str,
-    kb_id: str,
+    kb_ids: list[str],
     case_id: str,
 ) -> dict[str, Any] | None:
     question = _trace_query(trace)
@@ -311,7 +343,7 @@ def _build_case(
         "id": case_id,
         "question": question,
         "ground_truth": "",
-        "kb_id": kb_id,
+        "kb_ids": list(kb_ids),
         "source": source,
     }
 
@@ -355,13 +387,14 @@ def collect_cases(
                 continue
             raise
 
-        trace_kb_id = _trace_kb_id(trace)
-        if kb_id is not None and trace_kb_id is not None and trace_kb_id != kb_id:
+        trace_kb_ids = _trace_kb_ids(trace)
+        if kb_id is not None and trace_kb_ids and kb_id not in trace_kb_ids:
             continue
-        effective_kb_id = trace_kb_id or kb_id
-        if effective_kb_id is None:
+        effective_kb_ids = trace_kb_ids or ([kb_id] if kb_id is not None else [])
+        if not effective_kb_ids:
             print(
-                f"warning: skipped trace_id={trace_id} because metadata.kb_id is missing",
+                "warning: skipped trace_id="
+                f"{trace_id} because metadata.kb_ids/kb_id is missing",
                 file=sys.stderr,
             )
             continue
@@ -377,7 +410,7 @@ def collect_cases(
             score,
             trace,
             trace_id=trace_id,
-            kb_id=effective_kb_id,
+            kb_ids=effective_kb_ids,
             case_id=case_id,
         )
         if case is None:
@@ -455,13 +488,31 @@ def merge_cases(existing: list[Any], candidates: list[dict[str, Any]]) -> list[A
     return merged
 
 
+def _case_kb_ids(case: dict[str, Any]) -> list[str]:
+    kb_ids = _as_text_list(case.get("kb_ids"))
+    if kb_ids:
+        return kb_ids
+    kb_id = _as_text(case.get("kb_id"))
+    return [kb_id] if kb_id is not None else []
+
+
 def build_dataset(name: str, *, cases: list[dict[str, Any]], kb_id: str | None) -> dict[str, Any]:
-    unique_kb_ids = {case["kb_id"] for case in cases if case.get("kb_id")}
-    dataset_kb_id = kb_id or (next(iter(unique_kb_ids)) if len(unique_kb_ids) == 1 else "")
+    case_scopes = [_case_kb_ids(case) for case in cases]
+    all_single_kb = bool(case_scopes) and all(len(scope) == 1 for scope in case_scopes)
+    unique_kb_ids = {scope[0] for scope in case_scopes if len(scope) == 1}
+    if all_single_kb and len(unique_kb_ids) == 1:
+        dataset_kb_id = _as_text(kb_id) or next(iter(unique_kb_ids))
+    elif not cases:
+        dataset_kb_id = _as_text(kb_id) or ""
+    else:
+        dataset_kb_id = ""
+
     output_cases: list[dict[str, Any]] = []
     for case in cases:
         output_case = dict(case)
-        if dataset_kb_id and output_case.get("kb_id") == dataset_kb_id:
+        case_scope = _case_kb_ids(output_case)
+        if case_scope:
+            output_case["kb_ids"] = case_scope
             output_case.pop("kb_id", None)
         output_cases.append(output_case)
     return {
