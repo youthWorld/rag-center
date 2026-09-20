@@ -157,17 +157,30 @@ class RetrieveObservability:
         fused_count: int,
         degraded: bool,
         degraded_reason: str | None,
+        failed_kb_ids: list[str] | None = None,
+        partial_kb_success: bool = False,
+        per_kb_metadata: dict[str, dict[str, Any]] | None = None,
+        empty_reason: str | None = None,
     ) -> None:
+        output: dict[str, Any] = {
+            "vector_count": vector_count,
+            "bm25_count": bm25_count,
+            "fused_count": fused_count,
+            "degraded": degraded,
+            "degraded_reason": degraded_reason,
+        }
+        if failed_kb_ids:
+            output["failed_kb_ids"] = failed_kb_ids
+        if partial_kb_success:
+            output["partial_kb_success"] = True
+        if per_kb_metadata:
+            output["per_kb_metadata"] = per_kb_metadata
+        if empty_reason is not None:
+            output["empty_reason"] = empty_reason
         self._record_span(
             "retrieval",
             input={"query": search_query, "mode": mode},
-            output={
-                "vector_count": vector_count,
-                "bm25_count": bm25_count,
-                "fused_count": fused_count,
-                "degraded": degraded,
-                "degraded_reason": degraded_reason,
-            },
+            output=output,
         )
 
     def record_rerank(

@@ -136,6 +136,7 @@ curl.exe -s -X POST "http://127.0.0.1:8000/api/v1/rag/feedback" `
 
 | code | 含义 | 处理方式 |
 | ---: | --- | --- |
+| `20003` | 检索失败 | 检查向量检索和 BM25 依赖；hybrid 仅在两路都不可用时返回此错误。 |
 | `20010` | 未授权 | 检查 `Authorization: Bearer <api-key>`、Key 状态和过期时间。 |
 | `20013` | 功能超出套餐 | 根据 `/auth/me` 的 features 更换 profile 或升级套餐。 |
 | `20014` | 配额超限 | 检查 `limits` 和 `usage`，减少知识库、文档或当天检索量，或升级套餐。页面会展示响应中的 `msg`。 |

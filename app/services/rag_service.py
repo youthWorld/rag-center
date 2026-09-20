@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import Settings
 from app.core.error_codes import ErrorCode
 from app.core.exceptions import (
+    AppError,
     KnowledgeBaseNotFoundError,
     ServiceConfigurationError,
     raise_app_error,
@@ -96,6 +97,7 @@ class RagService:
         tenant: Any | None = None,
         plan_context: PlanContext | None = None,
     ) -> RagRetrieveResponse:
+        self._validate_query(request.query)
         kb_ids = self._resolve_kb_ids(request)
         self.logger.info(
             "BUSINESS_EVENT | event=rag_retrieval_started | kb_ids=%s | tenant_id=%s | user_id=%s",
@@ -223,30 +225,7 @@ class RagService:
                 bm25_top_k,
             )
 
-        vector_results: list[dict[str, Any]] = []
-        bm25_results: list[dict[str, Any]] = []
-        if mode in {"vector", "hybrid"}:
-            vector_started_at = time.perf_counter()
-            query_vector = await self.embedding_provider.embed_query(search_query)
-            vector_results = await self.vector_store.similarity_search(
-                query_vector,
-                tenant_id=tenant_id,
-                kb_id=knowledge_base.id,
-                top_k=vector_top_k,
-            )
-            self.logger.info(
-                "VECTOR_SEARCH_SUCCESS | tenant_id=%s | kb_id=%s | query=%s | "
-                "vector_top_k=%s | vector_count=%s | cost_ms=%s",
-                tenant_id,
-                knowledge_base.id,
-                search_query,
-                vector_top_k,
-                len(vector_results),
-                int((time.perf_counter() - vector_started_at) * 1000),
-            )
-
-        retrieval_degraded = False
-        degraded_reason: str | None = None
+        keyword_search_provider: KeywordSearchProvider | None = None
         if mode in {"bm25", "hybrid"}:
             keyword_search_provider = self._get_keyword_search_provider()
             if keyword_search_provider is None:
@@ -254,94 +233,70 @@ class RagService:
                     internal_message="keyword search provider is not configured",
                     context={"mode": mode},
                 )
-            bm25_started_at = time.perf_counter()
+
+        query_vector: list[float] | None = None
+        vector_error: Exception | None = None
+        if mode in {"vector", "hybrid"}:
             try:
-                bm25_results = await keyword_search_provider.keyword_search(
-                    query=search_query,
-                    tenant_id=tenant_id,
-                    kb_id=knowledge_base.id,
-                    top_k=bm25_top_k,
-                )
+                query_vector = await self.embedding_provider.embed_query(search_query)
             except Exception as exception:
-                if mode != "hybrid":
-                    raise
-                retrieval_degraded = True
-                degraded_reason = "bm25 search failed"
+                vector_error = exception
                 self.logger.exception(
-                    "BM25_SEARCH_FAILED | tenant_id=%s | kb_id=%s | query=%s | "
-                    "vector_top_k=%s | bm25_top_k=%s | vector_count=%s | "
-                    "bm25_count=%s | fused_count=%s | cost_ms=%s | error=%s",
+                    "VECTOR_QUERY_EMBEDDING_FAILED | tenant_id=%s | kb_id=%s | query=%s | "
+                    "error=%s",
                     tenant_id,
                     knowledge_base.id,
                     search_query,
-                    vector_top_k,
-                    bm25_top_k,
-                    len(vector_results),
-                    0,
-                    0,
-                    int((time.perf_counter() - bm25_started_at) * 1000),
                     str(exception) or type(exception).__name__,
                 )
-                self.logger.warning(
-                    "HYBRID_SEARCH_DEGRADED | tenant_id=%s | kb_id=%s | query=%s | "
-                    "degraded_reason=%s | vector_count=%s | cost_ms=%s",
-                    tenant_id,
-                    knowledge_base.id,
-                    search_query,
-                    degraded_reason,
-                    len(vector_results),
-                    int((time.perf_counter() - started_at) * 1000),
-                )
-            else:
-                self.logger.info(
-                    "BM25_SEARCH_SUCCESS | tenant_id=%s | kb_id=%s | query=%s | "
-                    "bm25_top_k=%s | bm25_count=%s | cost_ms=%s",
-                    tenant_id,
-                    knowledge_base.id,
-                    search_query,
-                    bm25_top_k,
-                    len(bm25_results),
-                    int((time.perf_counter() - bm25_started_at) * 1000),
-                )
 
-        if mode == "vector":
-            retrieved = self.hybrid_search_service.normalize_vector_results(vector_results)
-            fused_count = len(retrieved)
-        elif mode == "bm25":
-            retrieved = self.hybrid_search_service.normalize_bm25_results(bm25_results)
-            fused_count = len(retrieved)
-        elif retrieval_degraded:
-            retrieved = self.hybrid_search_service.normalize_vector_results(vector_results)
-            fused_count = len(retrieved)
-        else:
-            fused_started_at = time.perf_counter()
-            retrieved = self.hybrid_search_service.fuse(
-                vector_results,
-                bm25_results,
-                rrf_k=rrf_k,
-            )
-            fused_count = len(retrieved)
-            self.logger.info(
-                "RRF_FUSION_SUCCESS | tenant_id=%s | kb_id=%s | query=%s | "
-                "vector_count=%s | bm25_count=%s | fused_count=%s | cost_ms=%s",
-                tenant_id,
-                knowledge_base.id,
-                search_query,
-                len(vector_results),
-                len(bm25_results),
-                fused_count,
-                int((time.perf_counter() - fused_started_at) * 1000),
-            )
-
-        retrieved = retrieved[:top_k]
-        observability.record_retrieval(
+        candidate = await self._retrieve_candidates(
+            tenant_id=tenant_id,
+            knowledge_base=knowledge_base,
             search_query=search_query,
+            query_vector=query_vector,
+            vector_error=vector_error,
             mode=mode,
-            vector_count=len(vector_results),
-            bm25_count=len(bm25_results),
+            vector_top_k=vector_top_k,
+            bm25_top_k=bm25_top_k,
+            rrf_k=rrf_k,
+            keyword_search_provider=keyword_search_provider,
+        )
+        retrieved = candidate.chunks[:top_k]
+        vector_count = candidate.vector_count
+        bm25_count = candidate.bm25_count
+        fused_count = candidate.fused_count
+        retrieval_degraded = candidate.degraded
+        degraded_reason = candidate.degraded_reason
+        empty_reason = (
+            await self._resolve_empty_reason(
+                kb_ids=[knowledge_base.id],
+                tenant_id=tenant_id,
+            )
+            if not retrieved
+            else None
+        )
+        retrieval_metadata = self._build_retrieval_metadata(
+            mode=mode,
+            rrf_k=rrf_k,
+            vector_top_k=vector_top_k,
+            bm25_top_k=bm25_top_k,
+            vector_count=vector_count,
+            bm25_count=bm25_count,
             fused_count=fused_count,
             degraded=retrieval_degraded,
             degraded_reason=degraded_reason,
+            empty_reason=empty_reason,
+        )
+        observability.record_retrieval(
+            search_query=search_query,
+            mode=mode,
+            vector_count=vector_count,
+            bm25_count=bm25_count,
+            fused_count=fused_count,
+            degraded=retrieval_degraded,
+            degraded_reason=degraded_reason,
+            empty_reason=empty_reason,
         )
 
         rerank_top_n = self._resolve_rerank_top_n(effective_request)
@@ -421,6 +376,7 @@ class RagService:
             search_query=search_query,
             effective_query=query_processing.effective_query,
             retrieved_chunks=serialized_chunks,
+            retrieval_metadata=retrieval_metadata,
             top_k=top_k,
             vector_store=self.settings.vector_store,
             latency_ms=latency_ms,
@@ -441,8 +397,8 @@ class RagService:
             search_query,
             vector_top_k,
             bm25_top_k,
-            len(vector_results),
-            len(bm25_results),
+            vector_count,
+            bm25_count,
             fused_count,
             len(retrieved_chunks),
             latency_ms,
@@ -465,17 +421,7 @@ class RagService:
                     if query_processing.should_expose()
                     else None
                 ),
-                "retrieval": self._build_retrieval_metadata(
-                    mode=mode,
-                    rrf_k=rrf_k,
-                    vector_top_k=vector_top_k,
-                    bm25_top_k=bm25_top_k,
-                    vector_count=len(vector_results),
-                    bm25_count=len(bm25_results),
-                    fused_count=fused_count,
-                    degraded=retrieval_degraded,
-                    degraded_reason=degraded_reason,
-                ),
+                "retrieval": retrieval_metadata,
                 "rerank": self._build_rerank_metadata(
                     enabled=rerank_enabled,
                     top_n=rerank_top_n,
@@ -550,8 +496,20 @@ class RagService:
                 )
 
         query_vector: list[float] | None = None
+        vector_error: Exception | None = None
         if mode in {"vector", "hybrid"}:
-            query_vector = await self.embedding_provider.embed_query(search_query)
+            try:
+                query_vector = await self.embedding_provider.embed_query(search_query)
+            except Exception as exception:
+                vector_error = exception
+                self.logger.exception(
+                    "VECTOR_QUERY_EMBEDDING_FAILED | tenant_id=%s | kb_ids=%s | query=%s | "
+                    "error=%s",
+                    tenant_id,
+                    kb_ids,
+                    search_query,
+                    str(exception) or type(exception).__name__,
+                )
 
         candidates = await asyncio.gather(
             *(
@@ -560,6 +518,7 @@ class RagService:
                     knowledge_base=knowledge_base,
                     search_query=search_query,
                     query_vector=query_vector,
+                    vector_error=vector_error,
                     mode=mode,
                     vector_top_k=per_kb_vector_top_k,
                     bm25_top_k=per_kb_bm25_top_k,
@@ -567,15 +526,42 @@ class RagService:
                     keyword_search_provider=keyword_search_provider,
                 )
                 for knowledge_base in knowledge_bases
-            )
+            ),
+            return_exceptions=True,
         )
 
         per_kb_chunks: dict[str, list[dict[str, Any]]] = {}
+        failed_kb_ids: list[str] = []
+        per_kb_metadata: dict[str, dict[str, Any]] = {}
         vector_count = 0
         bm25_count = 0
         degraded = False
         degraded_reason: str | None = None
-        for knowledge_base, candidate in zip(knowledge_bases, candidates, strict=True):
+        for knowledge_base, result in zip(knowledge_bases, candidates, strict=True):
+            kb_id = str(knowledge_base.id)
+            if not isinstance(result, _RetrievalCandidates):
+                exception = (
+                    result
+                    if isinstance(result, BaseException)
+                    else RuntimeError("unexpected retrieval result")
+                )
+                failed_kb_ids.append(kb_id)
+                per_kb_metadata[kb_id] = {
+                    "error": str(exception) or type(exception).__name__,
+                    "error_type": type(exception).__name__,
+                }
+                self.logger.error(
+                    "RETRIEVAL_KB_FAILED | tenant_id=%s | kb_id=%s | query=%s | "
+                    "error_type=%s | error=%s",
+                    tenant_id,
+                    kb_id,
+                    search_query,
+                    type(exception).__name__,
+                    str(exception) or type(exception).__name__,
+                )
+                continue
+
+            candidate = result
             per_kb_chunks[str(knowledge_base.id)] = self._tag_kb_chunks(
                 candidate.chunks[:per_kb_top_k],
                 knowledge_base,
@@ -586,12 +572,61 @@ class RagService:
                 degraded = True
                 degraded_reason = candidate.degraded_reason
 
+        if not per_kb_chunks:
+            raise AppError(
+                code=ErrorCode.RETRIEVAL_FAILED,
+                internal_message=(
+                    "retrieval failed for knowledge bases: "
+                    f"{', '.join(failed_kb_ids) or 'unknown'}"
+                ),
+                context={
+                    "kb_ids": kb_ids,
+                    "failed_kb_ids": failed_kb_ids,
+                    "per_kb_metadata": per_kb_metadata,
+                },
+            )
+
+        partial_kb_success = bool(failed_kb_ids)
+        if partial_kb_success:
+            degraded = True
+            degraded_reason = (
+                f"{degraded_reason}; partial knowledge-base retrieval"
+                if degraded_reason
+                else "partial knowledge-base retrieval"
+            )
+
         retrieved = self.multi_kb_fusion_service.fuse(
             per_kb_chunks,
             rrf_k=rrf_k,
         )
         fused_count = len(retrieved)
         retrieved = retrieved[:top_k]
+        empty_reason = (
+            await self._resolve_empty_reason(
+                kb_ids=kb_ids,
+                tenant_id=tenant_id,
+            )
+            if not retrieved
+            else None
+        )
+        retrieval_metadata = self._build_retrieval_metadata(
+            mode=mode,
+            rrf_k=rrf_k,
+            vector_top_k=per_kb_vector_top_k,
+            bm25_top_k=per_kb_bm25_top_k,
+            vector_count=vector_count,
+            bm25_count=bm25_count,
+            fused_count=fused_count,
+            degraded=degraded,
+            degraded_reason=degraded_reason,
+            failed_kb_ids=failed_kb_ids or None,
+            partial_kb_success=partial_kb_success,
+            per_kb_metadata=per_kb_metadata or None,
+            empty_reason=empty_reason,
+            multi_kb=True,
+            kb_count=len(kb_ids),
+            per_kb_top_k=per_kb_top_k,
+        )
         observability.record_retrieval(
             search_query=search_query,
             mode=mode,
@@ -600,6 +635,10 @@ class RagService:
             fused_count=fused_count,
             degraded=degraded,
             degraded_reason=degraded_reason,
+            failed_kb_ids=failed_kb_ids or None,
+            partial_kb_success=partial_kb_success,
+            per_kb_metadata=per_kb_metadata or None,
+            empty_reason=empty_reason,
         )
 
         rerank_top_n = self._resolve_rerank_top_n(effective_request)
@@ -676,6 +715,7 @@ class RagService:
             search_query=search_query,
             effective_query=query_processing.effective_query,
             retrieved_chunks=serialized_chunks,
+            retrieval_metadata=retrieval_metadata,
             top_k=top_k,
             vector_store=self.settings.vector_store,
             latency_ms=latency_ms,
@@ -720,20 +760,7 @@ class RagService:
                     if query_processing.should_expose()
                     else None
                 ),
-                "retrieval": self._build_retrieval_metadata(
-                    mode=mode,
-                    rrf_k=rrf_k,
-                    vector_top_k=per_kb_vector_top_k,
-                    bm25_top_k=per_kb_bm25_top_k,
-                    vector_count=vector_count,
-                    bm25_count=bm25_count,
-                    fused_count=fused_count,
-                    degraded=degraded,
-                    degraded_reason=degraded_reason,
-                    multi_kb=True,
-                    kb_count=len(kb_ids),
-                    per_kb_top_k=per_kb_top_k,
-                ),
+                "retrieval": retrieval_metadata,
                 "rerank": self._build_rerank_metadata(
                     enabled=rerank_enabled,
                     top_n=rerank_top_n,
@@ -758,6 +785,7 @@ class RagService:
         knowledge_base: Any,
         search_query: str,
         query_vector: list[float] | None,
+        vector_error: Exception | None = None,
         mode: RetrievalMode,
         vector_top_k: int,
         bm25_top_k: int,
@@ -766,29 +794,67 @@ class RagService:
     ) -> _RetrievalCandidates:
         vector_results: list[dict[str, Any]] = []
         bm25_results: list[dict[str, Any]] = []
+        vector_failed = False
+        bm25_failed = False
+        vector_exception: Exception | None = vector_error
+        bm25_exception: Exception | None = None
         if mode in {"vector", "hybrid"}:
-            if query_vector is None:
-                raise ServiceConfigurationError(
-                    internal_message="query vector is not available",
-                    context={"mode": mode},
-                )
             vector_started_at = time.perf_counter()
-            vector_results = await self.vector_store.similarity_search(
-                query_vector,
-                tenant_id=tenant_id,
-                kb_id=knowledge_base.id,
-                top_k=vector_top_k,
-            )
-            self.logger.info(
-                "VECTOR_SEARCH_SUCCESS | tenant_id=%s | kb_id=%s | query=%s | "
-                "vector_top_k=%s | vector_count=%s | cost_ms=%s",
-                tenant_id,
-                knowledge_base.id,
-                search_query,
-                vector_top_k,
-                len(vector_results),
-                int((time.perf_counter() - vector_started_at) * 1000),
-            )
+            if query_vector is None:
+                vector_failed = True
+                vector_exception = vector_exception or RuntimeError(
+                    "query vector is not available"
+                )
+                self.logger.error(
+                    "VECTOR_SEARCH_FAILED | tenant_id=%s | kb_id=%s | query=%s | "
+                    "vector_top_k=%s | cost_ms=%s | error=%s",
+                    tenant_id,
+                    knowledge_base.id,
+                    search_query,
+                    vector_top_k,
+                    int((time.perf_counter() - vector_started_at) * 1000),
+                    str(vector_exception) or type(vector_exception).__name__,
+                )
+            else:
+                try:
+                    vector_results = await self.vector_store.similarity_search(
+                        query_vector,
+                        tenant_id=tenant_id,
+                        kb_id=knowledge_base.id,
+                        top_k=vector_top_k,
+                    )
+                except Exception as exception:
+                    vector_failed = True
+                    vector_exception = exception
+                    self.logger.exception(
+                        "VECTOR_SEARCH_FAILED | tenant_id=%s | kb_id=%s | query=%s | "
+                        "vector_top_k=%s | cost_ms=%s | error=%s",
+                        tenant_id,
+                        knowledge_base.id,
+                        search_query,
+                        vector_top_k,
+                        int((time.perf_counter() - vector_started_at) * 1000),
+                        str(exception) or type(exception).__name__,
+                    )
+                else:
+                    self.logger.info(
+                        "VECTOR_SEARCH_SUCCESS | tenant_id=%s | kb_id=%s | query=%s | "
+                        "vector_top_k=%s | vector_count=%s | cost_ms=%s",
+                        tenant_id,
+                        knowledge_base.id,
+                        search_query,
+                        vector_top_k,
+                        len(vector_results),
+                        int((time.perf_counter() - vector_started_at) * 1000),
+                    )
+
+            if vector_failed and mode == "vector":
+                error = vector_exception or RuntimeError("vector search failed")
+                raise self._build_retrieval_failed_error(
+                    kb_id=str(knowledge_base.id),
+                    stage="vector search",
+                    exception=error,
+                ) from error
 
         retrieval_degraded = False
         degraded_reason: str | None = None
@@ -807,10 +873,8 @@ class RagService:
                     top_k=bm25_top_k,
                 )
             except Exception as exception:
-                if mode != "hybrid":
-                    raise
-                retrieval_degraded = True
-                degraded_reason = "bm25 search failed"
+                bm25_failed = True
+                bm25_exception = exception
                 self.logger.exception(
                     "BM25_SEARCH_FAILED | tenant_id=%s | kb_id=%s | query=%s | "
                     "vector_top_k=%s | bm25_top_k=%s | vector_count=%s | "
@@ -826,6 +890,12 @@ class RagService:
                     int((time.perf_counter() - bm25_started_at) * 1000),
                     str(exception) or type(exception).__name__,
                 )
+                if mode == "bm25":
+                    raise self._build_retrieval_failed_error(
+                        kb_id=str(knowledge_base.id),
+                        stage="bm25 search",
+                        exception=exception,
+                    ) from exception
             else:
                 self.logger.info(
                     "BM25_SEARCH_SUCCESS | tenant_id=%s | kb_id=%s | query=%s | "
@@ -838,12 +908,53 @@ class RagService:
                     int((time.perf_counter() - bm25_started_at) * 1000),
                 )
 
+        if mode == "hybrid" and vector_failed and bm25_failed:
+            vector_detail = str(vector_exception) or type(vector_exception).__name__
+            bm25_detail = str(bm25_exception) or type(bm25_exception).__name__
+            error = RuntimeError(
+                f"vector search failed: {vector_detail}; "
+                f"bm25 search failed: {bm25_detail}"
+            )
+            raise self._build_retrieval_failed_error(
+                kb_id=str(knowledge_base.id),
+                stage="hybrid search",
+                exception=error,
+                context={
+                    "vector_error": vector_detail,
+                    "bm25_error": bm25_detail,
+                },
+            ) from error
+
         if mode == "vector":
             retrieved = self.hybrid_search_service.normalize_vector_results(vector_results)
         elif mode == "bm25":
             retrieved = self.hybrid_search_service.normalize_bm25_results(bm25_results)
-        elif retrieval_degraded:
+        elif vector_failed:
+            retrieval_degraded = True
+            degraded_reason = "vector search failed"
+            retrieved = self.hybrid_search_service.normalize_bm25_results(bm25_results)
+            self.logger.warning(
+                "HYBRID_SEARCH_DEGRADED | tenant_id=%s | kb_id=%s | query=%s | "
+                "degraded_reason=%s | bm25_count=%s",
+                tenant_id,
+                knowledge_base.id,
+                search_query,
+                degraded_reason,
+                len(bm25_results),
+            )
+        elif bm25_failed:
+            retrieval_degraded = True
+            degraded_reason = "bm25 search failed"
             retrieved = self.hybrid_search_service.normalize_vector_results(vector_results)
+            self.logger.warning(
+                "HYBRID_SEARCH_DEGRADED | tenant_id=%s | kb_id=%s | query=%s | "
+                "degraded_reason=%s | vector_count=%s",
+                tenant_id,
+                knowledge_base.id,
+                search_query,
+                degraded_reason,
+                len(vector_results),
+            )
         else:
             fused_started_at = time.perf_counter()
             retrieved = self.hybrid_search_service.fuse(
@@ -870,6 +981,28 @@ class RagService:
             fused_count=len(retrieved),
             degraded=retrieval_degraded,
             degraded_reason=degraded_reason,
+        )
+
+    @staticmethod
+    def _build_retrieval_failed_error(
+        *,
+        kb_id: str,
+        stage: str,
+        exception: BaseException,
+        context: dict[str, Any] | None = None,
+    ) -> AppError:
+        detail = str(exception) or type(exception).__name__
+        error_context = {
+            "kb_id": kb_id,
+            "stage": stage,
+            "error_type": type(exception).__name__,
+        }
+        if context:
+            error_context.update(context)
+        return AppError(
+            code=ErrorCode.RETRIEVAL_FAILED,
+            internal_message=f"{stage} failed: {detail}",
+            context=error_context,
         )
 
     async def _load_knowledge_bases(
@@ -917,6 +1050,55 @@ class RagService:
             }
             for chunk in chunks
         ]
+
+    def _validate_query(self, query: str) -> None:
+        normalized_query = query.strip()
+        if not normalized_query:
+            raise_app_error(ErrorCode.PARAM_ERROR, "query must not be blank")
+
+        max_length = self.settings.query_max_length
+        if len(normalized_query) > max_length:
+            raise_app_error(
+                ErrorCode.PARAM_ERROR,
+                f"query must not exceed {max_length} characters",
+                data={"max_length": max_length},
+            )
+
+    async def _resolve_empty_reason(
+        self,
+        *,
+        kb_ids: list[str],
+        tenant_id: str,
+    ) -> str:
+        count_indexed_chunks = getattr(
+            self.knowledge_base_repository,
+            "count_indexed_chunks",
+            None,
+        )
+        if not callable(count_indexed_chunks):
+            return "no_chunks_matched"
+
+        try:
+            counts = await asyncio.gather(
+                *(
+                    count_indexed_chunks(kb_id=kb_id, tenant_id=tenant_id)
+                    for kb_id in kb_ids
+                )
+            )
+        except Exception as exception:
+            self.logger.warning(
+                "EMPTY_REASON_RESOLUTION_FAILED | tenant_id=%s | kb_ids=%s | error=%s",
+                tenant_id,
+                kb_ids,
+                str(exception) or type(exception).__name__,
+            )
+            return "no_chunks_matched"
+
+        return (
+            "no_indexed_chunks"
+            if sum(int(count) for count in counts) == 0
+            else "no_chunks_matched"
+        )
 
     @staticmethod
     def _resolve_multi_kb_top_k(
@@ -1142,6 +1324,10 @@ class RagService:
         fused_count: int,
         degraded: bool,
         degraded_reason: str | None,
+        failed_kb_ids: list[str] | None = None,
+        partial_kb_success: bool = False,
+        per_kb_metadata: dict[str, Any] | None = None,
+        empty_reason: str | None = None,
         multi_kb: bool = False,
         kb_count: int | None = None,
         per_kb_top_k: int | None = None,
@@ -1172,6 +1358,14 @@ class RagService:
                     "rrf_k": rrf_k,
                 }
             )
+        if failed_kb_ids:
+            metadata["failed_kb_ids"] = failed_kb_ids
+        if partial_kb_success:
+            metadata["partial_kb_success"] = True
+        if per_kb_metadata:
+            metadata["per_kb_metadata"] = per_kb_metadata
+        if empty_reason is not None:
+            metadata["empty_reason"] = empty_reason
         if degraded:
             metadata["degraded"] = True
             metadata["degraded_reason"] = degraded_reason or "bm25 search failed"

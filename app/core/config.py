@@ -34,6 +34,7 @@ class Settings(BaseSettings):
     llm_timeout_seconds: int = 60
     query_rewrite_enabled: bool = False
     query_rewrite_timeout_ms: int = 2000
+    query_max_length: int = Field(default=2000, ge=1)
 
     vector_store: str = "pgvector"
     keyword_search_provider: str = "elasticsearch"

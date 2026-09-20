@@ -24,6 +24,7 @@ class RetrievalLogRepository:
         search_query: str | None = None,
         effective_query: str | None = None,
         retrieved_chunks: list[dict[str, Any]],
+        retrieval_metadata: dict[str, Any] | None = None,
         top_k: int,
         vector_store: str,
         latency_ms: int,
@@ -40,6 +41,9 @@ class RetrievalLogRepository:
             search_query=search_query,
             effective_query=effective_query,
             retrieved_chunks=retrieved_chunks,
+            retrieval_metadata=(
+                dict(retrieval_metadata) if retrieval_metadata is not None else None
+            ),
             top_k=top_k,
             vector_store=vector_store,
             latency_ms=latency_ms,

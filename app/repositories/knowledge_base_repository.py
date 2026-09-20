@@ -4,7 +4,7 @@ from sqlalchemy import and_, delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.chunk import Chunk
-from app.models.document import Document
+from app.models.document import Document, DocumentStatus
 from app.models.knowledge_base import KnowledgeBase
 from app.utils.id_generator import generate_id
 
@@ -66,6 +66,21 @@ class KnowledgeBaseRepository:
         statement = select(func.count(Document.id)).where(
             Document.kb_id == kb_id,
             Document.tenant_id == tenant_id,
+        )
+        result = await self.session.execute(statement)
+        return int(result.scalar_one())
+
+    async def count_indexed_chunks(self, *, kb_id: str, tenant_id: str) -> int:
+        statement = (
+            select(func.count(Chunk.id))
+            .join(Document, Chunk.document_id == Document.id)
+            .where(
+                Chunk.tenant_id == tenant_id,
+                Chunk.kb_id == kb_id,
+                Document.tenant_id == tenant_id,
+                Document.kb_id == kb_id,
+                Document.status == int(DocumentStatus.SUCCESS),
+            )
         )
         result = await self.session.execute(statement)
         return int(result.scalar_one())

@@ -9,6 +9,7 @@ from app.schemas.rerank import RerankOptions
 QueryRewriteStrategy = Literal["noop", "rewrite"]
 RetrieveProfile = Literal["speed", "balanced", "quality", "custom"]
 MULTI_KB_MAX = 5
+EmptyReason = Literal["no_indexed_chunks", "no_chunks_matched"]
 
 
 class QueryOptions(BaseModel):
@@ -24,20 +25,25 @@ class RagRetrieveRequest(BaseModel):
         max_length=MULTI_KB_MAX,
     )
     user_id: str = Field(min_length=1, max_length=128)
-    query: str = Field(min_length=1)
+    query: str
     profile: RetrieveProfile | None = None
     top_k: int | None = Field(default=None, ge=1)
     retrieval_options: RetrievalOptions | None = None
     rerank_options: RerankOptions | None = None
     query_options: QueryOptions | None = None
 
-    @field_validator("kb_id", "user_id", "query")
+    @field_validator("kb_id", "user_id")
     @classmethod
     def reject_blank(cls, value: str) -> str:
         value = value.strip()
         if not value:
             raise ValueError("must not be blank")
         return value
+
+    @field_validator("query")
+    @classmethod
+    def normalize_query(cls, value: str) -> str:
+        return value.strip()
 
     @field_validator("kb_ids")
     @classmethod
@@ -78,6 +84,28 @@ class RetrievedChunk(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class RetrievalMetadata(TypedDict, total=False):
+    mode: str
+    fusion: str
+    rrf_k: int | None
+    vector_store: str
+    keyword_search: str | None
+    vector_top_k: int
+    bm25_top_k: int
+    vector_count: int
+    bm25_count: int
+    fused_count: int
+    multi_kb: bool
+    kb_count: int | None
+    per_kb_top_k: int | None
+    degraded: bool
+    degraded_reason: str
+    failed_kb_ids: list[str] | None
+    partial_kb_success: bool
+    per_kb_metadata: dict[str, dict[str, Any]]
+    empty_reason: EmptyReason
+
+
 class RetrieveMetadata(TypedDict, total=False):
     log_id: str
     trace_id: str | None
@@ -85,7 +113,7 @@ class RetrieveMetadata(TypedDict, total=False):
     latency_ms: int
     vector_store: str
     query_processing: dict[str, Any] | None
-    retrieval: dict[str, Any]
+    retrieval: RetrievalMetadata
     rerank: dict[str, Any]
     tenant_policy: dict[str, Any]
 

@@ -18,6 +18,7 @@ class ErrorCode(Enum):
     # HTTP and upstream API errors.
     API_REQUEST_ERROR = (20001, "request failed")
     API_TIMEOUT = (20002, "request timed out")
+    RETRIEVAL_FAILED = (20003, "retrieval failed")
     API_RATE_LIMIT = (20005, "request rate limit exceeded")
     REQUEST_VALIDATION_ERROR = (20004, "request validation failed")
     FEATURE_NOT_ALLOWED = (20013, "feature is not allowed for this plan")

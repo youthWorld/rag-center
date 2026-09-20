@@ -27,6 +27,7 @@ class RetrievalLog(Base):
     search_query: Mapped[str | None] = mapped_column(Text, nullable=True)
     effective_query: Mapped[str | None] = mapped_column(Text, nullable=True)
     retrieved_chunks: Mapped[list[dict[str, Any]]] = mapped_column(JSON, nullable=False)
+    retrieval_metadata: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     top_k: Mapped[int] = mapped_column(Integer, nullable=False)
     vector_store: Mapped[str] = mapped_column(String(64), nullable=False)
     latency_ms: Mapped[int] = mapped_column(Integer, nullable=False)
