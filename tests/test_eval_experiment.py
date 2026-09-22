@@ -1,0 +1,89 @@
+from __future__ import annotations
+
+import copy
+import json
+from pathlib import Path
+
+import pytest
+
+from app.evaluation.experiment import (
+    ExperimentValidationError,
+    expand_group,
+    expected_effective_config,
+    load_and_validate_experiment,
+    validate_experiment,
+)
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+QUERY_REWRITE_EXPERIMENT = (
+    PROJECT_ROOT / "eval" / "experiments" / "query_rewrite.json"
+)
+
+
+@pytest.fixture
+def valid_experiment() -> dict:
+    return json.loads(QUERY_REWRITE_EXPERIMENT.read_text(encoding="utf-8"))
+
+
+def test_query_rewrite_experiment_is_valid() -> None:
+    experiment = load_and_validate_experiment(QUERY_REWRITE_EXPERIMENT)
+
+    baseline = expected_effective_config(experiment["baseline"])
+    candidate = expected_effective_config(experiment["candidate"])
+
+    assert baseline["rewrite_enabled"] is False
+    assert candidate["rewrite_enabled"] is True
+    assert baseline["synonym_enabled"] is False
+    assert baseline["bm25_top_k"] == 0
+
+
+def test_undeclared_group_difference_is_rejected(valid_experiment: dict) -> None:
+    experiment = copy.deepcopy(valid_experiment)
+    experiment["candidate"]["top_k"] = 6
+
+    with pytest.raises(ExperimentValidationError, match="missing actual differences"):
+        validate_experiment(experiment)
+
+
+def test_changed_field_must_represent_an_actual_difference(valid_experiment: dict) -> None:
+    experiment = copy.deepcopy(valid_experiment)
+    experiment["changed_fields"].append("rerank_options.enabled")
+
+    with pytest.raises(ExperimentValidationError, match="paths that do not differ"):
+        validate_experiment(experiment)
+
+
+def test_named_profile_rejects_advanced_overrides() -> None:
+    with pytest.raises(ExperimentValidationError, match="must not include advanced overrides"):
+        expand_group(
+            {
+                "label": "speed",
+                "profile": "speed",
+                "top_k": 10,
+            }
+        )
+
+
+def test_named_profile_expands_existing_project_preset() -> None:
+    expanded = expand_group({"label": "quality", "profile": "quality"})
+
+    assert expanded["retrieval_options"] == {
+        "mode": "hybrid",
+        "vector_top_k": 8,
+        "bm25_top_k": 8,
+        "rrf_k": 60,
+    }
+    assert expanded["rerank_options"] == {"enabled": True, "top_n": 5}
+    assert expanded["query_options"] == {
+        "enabled": True,
+        "strategy": "rewrite",
+        "synonym_enabled": True,
+    }
+
+
+def test_invalid_decision_threshold_is_rejected(valid_experiment: dict) -> None:
+    experiment = copy.deepcopy(valid_experiment)
+    experiment["decision"]["cost_limits"]["max_p95_increase_ratio"] = -1
+
+    with pytest.raises(ExperimentValidationError, match="must be non-negative"):
+        validate_experiment(experiment)

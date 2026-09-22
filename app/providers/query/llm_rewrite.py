@@ -41,6 +41,7 @@ class LLMRewriteProcessor(QueryProcessor):
         context: QueryContext,
     ) -> QueryProcessResult:
         started_at = time.perf_counter()
+        model_call_attempted = False
         try:
             if self.llm_provider is None:
                 raise LLMProviderError("query rewrite LLM provider is not configured")
@@ -57,6 +58,7 @@ class LLMRewriteProcessor(QueryProcessor):
                 "kb_description": description,
             }
             timeout_seconds = self.timeout_ms / 1000
+            model_call_attempted = True
             rewritten = await asyncio.wait_for(
                 self.llm_provider.chat_text(
                     system_prompt=QUERY_REWRITE_SYSTEM_PROMPT,
@@ -78,18 +80,21 @@ class LLMRewriteProcessor(QueryProcessor):
                 rewrite_latency_ms=self._latency_ms(started_at),
                 degraded=False,
                 degraded_reason=None,
+                application_model_calls=result.application_model_calls + 1,
             )
         except TimeoutError:
             return self._degraded_result(
                 result,
                 started_at=started_at,
                 reason="query rewrite timed out",
+                model_call_attempted=model_call_attempted,
             )
         except Exception as exception:
             return self._degraded_result(
                 result,
                 started_at=started_at,
                 reason=str(exception) or type(exception).__name__,
+                model_call_attempted=model_call_attempted,
             )
 
     @classmethod
@@ -128,6 +133,7 @@ class LLMRewriteProcessor(QueryProcessor):
         *,
         started_at: float,
         reason: str,
+        model_call_attempted: bool,
     ) -> QueryProcessResult:
         return replace(
             result,
@@ -137,6 +143,9 @@ class LLMRewriteProcessor(QueryProcessor):
             rewrite_latency_ms=self._latency_ms(started_at),
             degraded=True,
             degraded_reason=reason[:500],
+            application_model_calls=(
+                result.application_model_calls + int(model_call_attempted)
+            ),
         )
 
     @staticmethod

@@ -78,6 +78,7 @@ class RetrieveObservability:
         profile: str,
         plan: str,
         raw_query: str,
+        enabled: bool = True,
     ) -> None:
         self.settings = settings
         self.tenant_id = tenant_id
@@ -87,11 +88,14 @@ class RetrieveObservability:
         self.profile = profile
         self.plan = plan
         self.raw_query = raw_query
+        self.enabled = enabled
         self.client: Langfuse | None = None
         self.trace: Any | None = None
         self.trace_id: str | None = None
 
     def __enter__(self) -> RetrieveObservability:
+        if not self.enabled:
+            return self
         self.client = get_langfuse_client(self.settings)
         if self.client is None:
             return self

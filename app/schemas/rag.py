@@ -15,6 +15,7 @@ EmptyReason = Literal["no_indexed_chunks", "no_chunks_matched"]
 class QueryOptions(BaseModel):
     enabled: bool | None = None
     strategy: QueryRewriteStrategy | None = None
+    synonym_enabled: bool | None = None
 
 
 class RagRetrieveRequest(BaseModel):
@@ -31,6 +32,7 @@ class RagRetrieveRequest(BaseModel):
     retrieval_options: RetrievalOptions | None = None
     rerank_options: RerankOptions | None = None
     query_options: QueryOptions | None = None
+    observability_enabled: bool | None = None
 
     @field_validator("kb_id", "user_id")
     @classmethod
@@ -116,6 +118,8 @@ class RetrieveMetadata(TypedDict, total=False):
     retrieval: RetrievalMetadata
     rerank: dict[str, Any]
     tenant_policy: dict[str, Any]
+    application_model_calls: int
+    application_model_call_details: dict[str, int]
 
 
 class RagRetrieveResponse(BaseModel):

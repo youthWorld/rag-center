@@ -144,6 +144,7 @@ async def test_llm_rewrite_uses_description_and_rewrite_hint() -> None:
     assert result.strategy == "rewrite"
     assert result.degraded is False
     assert result.rewrite_latency_ms >= 0
+    assert result.application_model_calls == 1
     call = llm.calls[0]
     assert call["system_prompt"] == QUERY_REWRITE_SYSTEM_PROMPT
     assert call["user_payload"] == {
@@ -177,6 +178,7 @@ async def test_llm_rewrite_degrades_without_breaking_query_processing() -> None:
     assert result.effective_query == "背调要问啥"
     assert result.search_query == "背调要问啥"
     assert result.degraded_reason == "provider unavailable"
+    assert result.application_model_calls == 1
 
 
 @pytest.mark.asyncio
@@ -267,6 +269,30 @@ async def test_pipeline_request_options_override_global_rewrite_setting() -> Non
 
 
 @pytest.mark.asyncio
+async def test_pipeline_can_disable_synonym_expansion_per_request() -> None:
+    pipeline = QueryPipeline()
+    knowledge_base = SimpleNamespace(
+        name="KB",
+        description=None,
+        settings={"synonyms": [{"terms": ["退款"], "expand": ["原路退回"]}]},
+    )
+
+    result = await pipeline.process(
+        "退款",
+        knowledge_base=knowledge_base,
+        query_options={
+            "enabled": False,
+            "strategy": "noop",
+            "synonym_enabled": False,
+        },
+    )
+
+    assert result.search_query == "退款"
+    assert result.synonym_enabled is False
+    assert result.synonym_applied is False
+
+
+@pytest.mark.asyncio
 async def test_synonyms_are_scoped_to_each_knowledge_base() -> None:
     pipeline = QueryPipeline()
     kb_one = SimpleNamespace(
@@ -339,8 +365,15 @@ async def test_rag_service_uses_processed_query_for_retrieval_but_raw_query_for_
         "rewrite_latency_ms": response.metadata["query_processing"]["rewrite_latency_ms"],
         "degraded": False,
         "degraded_reason": None,
+        "synonym_enabled": None,
         "synonym_applied": True,
         "synonym_expansions": ["标准问题清单"],
+        "application_model_calls": 1,
+    }
+    assert response.metadata["application_model_calls"] == 2
+    assert response.metadata["application_model_call_details"] == {
+        "query_rewrite": 1,
+        "rerank": 1,
     }
 
 

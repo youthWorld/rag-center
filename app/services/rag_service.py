@@ -141,6 +141,7 @@ class RagService:
             profile=profile,
             plan=plan.plan,
             raw_query=request.query,
+            enabled=request.observability_enabled is not False,
         )
         with observability:
             return await self._retrieve(
@@ -325,6 +326,15 @@ class RagService:
                     rerank_error,
                 )
 
+        rerank_model_calls = int(
+            rerank_enabled
+            and candidate_count > 0
+            and self.settings.rerank_provider != "noop"
+        )
+        application_model_call_details = {
+            "query_rewrite": query_processing.application_model_calls,
+            "rerank": rerank_model_calls,
+        }
         observability.record_rerank(
             enabled=rerank_enabled,
             candidate_count=candidate_count,
@@ -436,6 +446,8 @@ class RagService:
                     "effective_rerank": rerank_enabled,
                     "effective_query_rewrite": query_rewrite_enabled,
                 },
+                "application_model_calls": sum(application_model_call_details.values()),
+                "application_model_call_details": application_model_call_details,
             },
         )
 
@@ -667,6 +679,15 @@ class RagService:
                     rerank_error,
                 )
 
+        rerank_model_calls = int(
+            rerank_enabled
+            and candidate_count > 0
+            and self.settings.rerank_provider != "noop"
+        )
+        application_model_call_details = {
+            "query_rewrite": query_processing.application_model_calls,
+            "rerank": rerank_model_calls,
+        }
         observability.record_rerank(
             enabled=rerank_enabled,
             candidate_count=candidate_count,
@@ -775,6 +796,8 @@ class RagService:
                     "effective_rerank": rerank_enabled,
                     "effective_query_rewrite": query_rewrite_enabled,
                 },
+                "application_model_calls": sum(application_model_call_details.values()),
+                "application_model_call_details": application_model_call_details,
             },
         )
 

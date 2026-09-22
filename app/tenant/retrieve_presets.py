@@ -12,10 +12,12 @@ RETRIEVE_PROFILE_PRESETS: dict[str, dict[str, Any]] = {
         },
         "rerank_options": {
             "enabled": False,
+            "top_n": 5,
         },
         "query_options": {
             "enabled": False,
             "strategy": "noop",
+            "synonym_enabled": True,
         },
     },
     "balanced": {
@@ -24,13 +26,16 @@ RETRIEVE_PROFILE_PRESETS: dict[str, dict[str, Any]] = {
             "mode": "hybrid",
             "vector_top_k": 5,
             "bm25_top_k": 5,
+            "rrf_k": 60,
         },
         "rerank_options": {
             "enabled": False,
+            "top_n": 5,
         },
         "query_options": {
             "enabled": False,
             "strategy": "noop",
+            "synonym_enabled": True,
         },
     },
     "quality": {
@@ -39,6 +44,7 @@ RETRIEVE_PROFILE_PRESETS: dict[str, dict[str, Any]] = {
             "mode": "hybrid",
             "vector_top_k": 8,
             "bm25_top_k": 8,
+            "rrf_k": 60,
         },
         "rerank_options": {
             "enabled": True,
@@ -47,6 +53,7 @@ RETRIEVE_PROFILE_PRESETS: dict[str, dict[str, Any]] = {
         "query_options": {
             "enabled": True,
             "strategy": "rewrite",
+            "synonym_enabled": True,
         },
     },
     "custom": {},

@@ -40,8 +40,10 @@ class QueryProcessResult:
     rewrite_latency_ms: int = 0
     degraded: bool = False
     degraded_reason: str | None = None
+    synonym_enabled: bool | None = None
     synonym_applied: bool = False
     synonym_expansions: list[str] = field(default_factory=list)
+    application_model_calls: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -52,6 +54,7 @@ class QueryProcessResult:
             or self.degraded
             or self.effective_query != self.raw_query
             or self.search_query != self.raw_query
+            or self.synonym_enabled is not None
             or self.synonym_applied
         )
 

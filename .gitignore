@@ -20,6 +20,7 @@ error.log
 
 # Offline evaluation reports
 /eval/reports/
+/eval/results/
 
 # Frontend dependencies and build output
 frontend/node_modules/
