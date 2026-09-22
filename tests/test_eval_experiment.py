@@ -18,6 +18,13 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 QUERY_REWRITE_EXPERIMENT = (
     PROJECT_ROOT / "eval" / "experiments" / "query_rewrite.json"
 )
+EXPERIMENT_NAMES = (
+    "hybrid_search.json",
+    "query_rewrite.json",
+    "synonym_expansion.json",
+    "profile_speed_vs_balanced.json",
+    "profile_balanced_vs_quality.json",
+)
 
 
 @pytest.fixture
@@ -35,6 +42,20 @@ def test_query_rewrite_experiment_is_valid() -> None:
     assert candidate["rewrite_enabled"] is True
     assert baseline["synonym_enabled"] is False
     assert baseline["bm25_top_k"] == 0
+
+
+@pytest.mark.parametrize("filename", EXPERIMENT_NAMES)
+def test_all_optimization_fifteen_experiments_are_independently_valid(
+    filename: str,
+) -> None:
+    experiment = load_and_validate_experiment(
+        PROJECT_ROOT / "eval" / "experiments" / filename
+    )
+
+    assert experiment["dataset"] == "eval/datasets/golden_basic_20.json"
+    assert experiment["suite"] == "basic"
+    assert experiment["warmup_cases"] == 0
+    assert experiment["decision"]["max_failed_cases"] == 0
 
 
 def test_undeclared_group_difference_is_rejected(valid_experiment: dict) -> None:
