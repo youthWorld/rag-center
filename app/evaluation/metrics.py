@@ -50,8 +50,12 @@ class RagasQualityScorer:
             from openai import OpenAI
             from ragas import RunConfig, evaluate
             from ragas.llms import llm_factory
-            from ragas.metrics.collections.context_precision import ContextPrecision
-            from ragas.metrics.collections.context_recall import ContextRecall
+
+            # The project lock currently uses RAGAS 0.4.3. Its legacy
+            # evaluate() entry point requires the legacy singleton Metric
+            # objects; the newer collections classes are incompatible with
+            # that entry point even though their names are similar.
+            from ragas.metrics import context_precision, context_recall
 
             settings = Settings()
             api_key, base_url = _judge_credentials(settings)
@@ -86,7 +90,7 @@ class RagasQualityScorer:
             )
             result = evaluate(
                 dataset,
-                metrics=[ContextRecall(evaluator_llm), ContextPrecision(evaluator_llm)],
+                metrics=[context_recall, context_precision],
                 llm=evaluator_llm,
                 run_config=RunConfig(
                     max_workers=self.max_workers,
