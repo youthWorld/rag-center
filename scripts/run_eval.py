@@ -15,6 +15,8 @@ from app.evaluation.experiment import (  # noqa: E402
     ExperimentValidationError,
     load_and_validate_experiment,
 )
+from app.evaluation.metrics import score_run  # noqa: E402
+from app.evaluation.report import write_report  # noqa: E402
 from app.evaluation.runner import (  # noqa: E402
     EvaluationRunError,
     EvaluationRunner,
@@ -54,6 +56,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     run_parser.add_argument("--limit", type=int)
     run_parser.add_argument("--output-suffix")
+
+    score_parser = subparsers.add_parser(
+        "score", help="Score saved raw contexts without retrieving again."
+    )
+    score_parser.add_argument("--run-dir", type=Path, required=True)
+
+    report_parser = subparsers.add_parser(
+        "report", help="Render a report from saved metrics without external calls."
+    )
+    report_parser.add_argument("--run-dir", type=Path, required=True)
     return parser
 
 
@@ -97,7 +109,7 @@ def main() -> int:
                 raise EvaluationRunError(
                     "EVAL_API_KEY or RAG_CENTER_API_KEY must be set in the environment"
                 )
-            os.environ.setdefault("RAGAS_DO_NOT_TRACK", "true")
+            os.environ["RAGAS_DO_NOT_TRACK"] = "true"
             run_dir = asyncio.run(
                 _run_retrievals(
                     experiment=experiment,
@@ -109,15 +121,39 @@ def main() -> int:
                     output_suffix=args.output_suffix,
                 )
             )
+            comparison = score_run(run_dir)
+            report_path = write_report(run_dir)
         except (
             DatasetValidationError,
             ExperimentValidationError,
             EvaluationRunError,
             OSError,
+            ValueError,
         ) as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 1
-        print(f"raw evaluation complete: {run_dir}")
+        print(
+            f"evaluation complete: run_dir={run_dir} "
+            f"verdict={comparison['verdict']} report={report_path}"
+        )
+        return 0
+    if args.command == "score":
+        try:
+            comparison = score_run(args.run_dir)
+        except (OSError, ValueError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        print(
+            f"scoring complete: run_dir={args.run_dir} verdict={comparison['verdict']}"
+        )
+        return 0
+    if args.command == "report":
+        try:
+            report_path = write_report(args.run_dir)
+        except (OSError, ValueError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        print(f"report complete: {report_path}")
         return 0
 
     raise AssertionError(f"unsupported command: {args.command}")
