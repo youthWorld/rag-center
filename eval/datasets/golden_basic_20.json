@@ -1,0 +1,265 @@
+{
+  "schema_version": "1.0",
+  "name": "rag_center_golden",
+  "version": "golden_basic_20",
+  "description": "20道电商平台运营规则基础检索题",
+  "knowledge_bases": {
+    "ecommerce": {
+      "kb_id": "9987281c-d34f-4835-b693-7534475d15d1",
+      "corpus_version": "ecommerce_corpus_base"
+    }
+  },
+  "suites": {
+    "basic": {
+      "description": "10道直接事实题、5道口语改写题、5道跨章节或跨文档题",
+      "case_ids": [
+        "normal_order_pickup_deadline",
+        "new_merchant_settlement_cycle",
+        "platform_coupon_expiry",
+        "unshipped_refund_time",
+        "sensitive_category_review_time",
+        "automatic_receipt_confirmation",
+        "return_warehouse_inspection",
+        "merchant_withdrawal_rules",
+        "platform_dispute_timeline",
+        "expired_qualification_handling",
+        "price_drop_compensation",
+        "courier_not_collected",
+        "store_closure_deposit_refund",
+        "unapproved_or_counterfeit_listing",
+        "cross_border_return_restriction",
+        "promotion_shipping_compensation",
+        "repeated_delayed_shipping_penalty",
+        "new_merchant_first_settlement",
+        "promotion_price_compliance",
+        "merchant_first_listing_requirements"
+      ]
+    },
+    "all": {
+      "description": "当前版本的全部题目",
+      "case_ids": "all"
+    }
+  },
+  "cases": [
+    {
+      "id": "normal_order_pickup_deadline",
+      "kb_alias": "ecommerce",
+      "suite": "basic",
+      "case_type": "direct_fact",
+      "question": "现货普通订单付款后多久必须完成揽收？",
+      "ground_truth": "现货普通订单应在付款后24小时内完成揽收，揽收以快递公司扫描揽收节点为准，仅生成电子面单不算揽收。",
+      "expected_documents": ["仓储物流与发货履约SLA.md"],
+      "expected_headings": ["2. 发货 SLA"],
+      "tags": ["logistics", "sla", "numeric"]
+    },
+    {
+      "id": "new_merchant_settlement_cycle",
+      "kb_alias": "ecommerce",
+      "suite": "basic",
+      "case_type": "direct_fact",
+      "question": "新商家前90天的货款按什么周期结算？",
+      "ground_truth": "新商家前90天按T+15结算，T是消费者确认收货日或超时自动确认日，款项到账至对公账户。",
+      "expected_documents": ["商家入驻结算与对账流程.md"],
+      "expected_headings": ["2. 货款结算周期"],
+      "tags": ["merchant", "settlement", "numeric"]
+    },
+    {
+      "id": "platform_coupon_expiry",
+      "kb_alias": "ecommerce",
+      "suite": "basic",
+      "case_type": "direct_fact",
+      "question": "平台券领取后通常多久有效，过期会补发吗？",
+      "ground_truth": "平台券领取后通常有7至30天有效期，过期作废且不补发。",
+      "expected_documents": ["促销活动与优惠券使用规则.md"],
+      "expected_headings": ["2.1 平台券"],
+      "tags": ["promotion", "coupon", "numeric"]
+    },
+    {
+      "id": "unshipped_refund_time",
+      "kb_alias": "ecommerce",
+      "suite": "basic",
+      "case_type": "direct_fact",
+      "question": "未发货订单申请退款后多久退回？",
+      "ground_truth": "未发货订单申请退款后2小时内原路退款。",
+      "expected_documents": ["平台交易规则与买家保障.md"],
+      "expected_headings": ["3.2 极速退款"],
+      "tags": ["refund", "buyer_protection", "numeric"]
+    },
+    {
+      "id": "sensitive_category_review_time",
+      "kb_alias": "ecommerce",
+      "suite": "basic",
+      "case_type": "direct_fact",
+      "question": "医疗、金融等敏感类目的商品审核要多久？",
+      "ground_truth": "医疗、金融等敏感类目的商品审核时限为72小时。",
+      "expected_documents": ["商品上架与类目合规规范.md"],
+      "expected_headings": ["4. 审核流程"],
+      "tags": ["listing", "compliance", "numeric"]
+    },
+    {
+      "id": "automatic_receipt_confirmation",
+      "kb_alias": "ecommerce",
+      "suite": "basic",
+      "case_type": "direct_fact",
+      "question": "买家一直不确认收货，系统什么时候自动确认？",
+      "ground_truth": "发货后10天无售后申请会自动确认收货，大件商品为15天，之后货款进入卖家待结算账户。",
+      "expected_documents": ["平台交易规则与买家保障.md"],
+      "expected_headings": ["2. 支付与订单状态"],
+      "tags": ["order", "settlement", "numeric"]
+    },
+    {
+      "id": "return_warehouse_inspection",
+      "kb_alias": "ecommerce",
+      "suite": "basic",
+      "case_type": "direct_fact",
+      "question": "退货被仓库签收后多长时间完成质检？",
+      "ground_truth": "仓库签收退货后48小时内完成质检并触发退款流程。",
+      "expected_documents": ["仓储物流与发货履约SLA.md"],
+      "expected_headings": ["6. 逆向物流（退货）"],
+      "tags": ["return", "warehouse", "numeric"]
+    },
+    {
+      "id": "merchant_withdrawal_rules",
+      "kb_alias": "ecommerce",
+      "suite": "basic",
+      "case_type": "direct_fact",
+      "question": "商家可提现余额最低多少元，发起后多久能到账？",
+      "ground_truth": "最低提现金额为100元，商家发起提现后1至3个工作日到账。",
+      "expected_documents": ["商家入驻结算与对账流程.md"],
+      "expected_headings": ["4. 对账与提现"],
+      "tags": ["merchant", "withdrawal", "numeric"]
+    },
+    {
+      "id": "platform_dispute_timeline",
+      "kb_alias": "ecommerce",
+      "suite": "basic",
+      "case_type": "direct_fact",
+      "question": "买卖双方协商不成后，平台介入和执行裁决各要多久？",
+      "ground_truth": "双方协商3天未达成一致可申请平台介入；平台在5个工作日内出具裁决，并在裁决后3个工作日内执行退款或打款。",
+      "expected_documents": ["平台交易规则与买家保障.md"],
+      "expected_headings": ["3.4 平台介入"],
+      "tags": ["dispute", "buyer_protection", "numeric"]
+    },
+    {
+      "id": "expired_qualification_handling",
+      "kb_alias": "ecommerce",
+      "suite": "basic",
+      "case_type": "direct_fact",
+      "question": "商品类目资质快到期或已经过期时平台怎么处理？",
+      "ground_truth": "资质到期前30天系统提醒，资质过期后自动下架相关SKU。",
+      "expected_documents": ["商品上架与类目合规规范.md"],
+      "expected_headings": ["3. 类目资质对照（示例）"],
+      "tags": ["listing", "qualification", "numeric"]
+    },
+    {
+      "id": "price_drop_compensation",
+      "kb_alias": "ecommerce",
+      "suite": "basic",
+      "case_type": "paraphrase",
+      "question": "刚买完就降价了，能把买贵的差价补给我吗？",
+      "ground_truth": "参与价保的商品在价保期内降价可以申请退差价，差价按实付金额减去当前可购最低价（含可用券后价）计算；秒杀、拼团、限量抢购、二手和已关闭订单不参与。",
+      "expected_documents": ["促销活动与优惠券使用规则.md"],
+      "expected_headings": ["4. 价格保护（价保）"],
+      "tags": ["promotion", "price_protection", "synonym"]
+    },
+    {
+      "id": "courier_not_collected",
+      "kb_alias": "ecommerce",
+      "suite": "basic",
+      "case_type": "paraphrase",
+      "question": "普通现货单商家一直没把包裹交给快递，只打了面单算发货了吗？",
+      "ground_truth": "不算。现货普通订单应在付款后24小时内由快递公司扫描揽收节点，仅生成电子面单不属于完成揽收。",
+      "expected_documents": ["仓储物流与发货履约SLA.md"],
+      "expected_headings": ["2. 发货 SLA"],
+      "tags": ["logistics", "pickup", "synonym"]
+    },
+    {
+      "id": "store_closure_deposit_refund",
+      "kb_alias": "ecommerce",
+      "suite": "basic",
+      "case_type": "paraphrase",
+      "question": "店铺关掉以后，押金什么时候能拿回来？",
+      "ground_truth": "商家申请退店后先公示30天，在没有纠纷的情况下，保证金余额于90天内无息退还。",
+      "expected_documents": ["商家入驻结算与对账流程.md"],
+      "expected_headings": ["5. 保证金管理"],
+      "tags": ["merchant", "deposit", "synonym"]
+    },
+    {
+      "id": "unapproved_or_counterfeit_listing",
+      "kb_alias": "ecommerce",
+      "suite": "basic",
+      "case_type": "paraphrase",
+      "question": "没有批号的医疗器械或者仿牌货能放到平台卖吗？",
+      "ground_truth": "不能。未取得批号的药品、医疗器械（平台白名单除外）以及侵犯知识产权的仿品属于禁售商品。",
+      "expected_documents": ["商品上架与类目合规规范.md"],
+      "expected_headings": ["1. 上架准入"],
+      "tags": ["listing", "prohibited_goods", "synonym"]
+    },
+    {
+      "id": "cross_border_return_restriction",
+      "kb_alias": "ecommerce",
+      "suite": "basic",
+      "case_type": "paraphrase",
+      "question": "海外直邮的东西只是觉得不合适，可以寄回去吗？",
+      "ground_truth": "跨境直邮退件成本较高，非质量问题原则上不支持退货，且下单页必须提示这一限制。",
+      "expected_documents": ["仓储物流与发货履约SLA.md"],
+      "expected_headings": ["8. 跨境物流（概要）"],
+      "tags": ["cross_border", "return", "synonym"]
+    },
+    {
+      "id": "promotion_shipping_compensation",
+      "kb_alias": "ecommerce",
+      "suite": "basic",
+      "case_type": "multi_document",
+      "question": "大促订单最晚什么时候揽收，超时要怎么赔？",
+      "ground_truth": "大促订单应在48小时内揽收，特殊类目为72小时；延迟发货按订单金额的5%向买家赔付券，每单最高30元。",
+      "expected_documents": ["仓储物流与发货履约SLA.md", "促销活动与优惠券使用规则.md"],
+      "expected_headings": ["2. 发货 SLA", "5. 大促商家规则（节选）"],
+      "tags": ["promotion", "logistics", "compensation", "numeric"]
+    },
+    {
+      "id": "repeated_delayed_shipping_penalty",
+      "kb_alias": "ecommerce",
+      "suite": "basic",
+      "case_type": "multi_document",
+      "question": "商家经常超时发货，除了给买家赔付还会受到什么平台处罚？",
+      "ground_truth": "大促延迟发货需按订单金额5%向买家赔付券、每单最高30元；商家延迟发货率超过10%时，店铺会被搜索降权7至30天，延迟发货还可能导致保证金违规扣款。",
+      "expected_documents": ["促销活动与优惠券使用规则.md", "平台交易规则与买家保障.md", "商家入驻结算与对账流程.md"],
+      "expected_headings": ["5. 大促商家规则（节选）", "5. 违规与处罚（商家）", "5. 保证金管理"],
+      "tags": ["merchant", "logistics", "penalty", "multi_document"]
+    },
+    {
+      "id": "new_merchant_first_settlement",
+      "kb_alias": "ecommerce",
+      "suite": "basic",
+      "case_type": "multi_document",
+      "question": "新商家的订单发货后，买家不点收货的话，最早按什么时间点开始算结算？",
+      "ground_truth": "普通商品发货后10天、大件商品15天无售后申请会自动确认收货；新商家前90天从该确认收货日按T+15结算，如售后仍在进行则延迟到售后关闭后结算。",
+      "expected_documents": ["平台交易规则与买家保障.md", "商家入驻结算与对账流程.md"],
+      "expected_headings": ["2. 支付与订单状态", "2. 货款结算周期"],
+      "tags": ["merchant", "settlement", "order", "multi_document"]
+    },
+    {
+      "id": "promotion_price_compliance",
+      "kb_alias": "ecommerce",
+      "suite": "basic",
+      "case_type": "multi_document",
+      "question": "商家先涨价再打折并宣传原价，平台对促销价格有什么限制？",
+      "ground_truth": "商品标价必须是真实销售价格，不得先涨后降营造虚假优惠；促销不得虚构原价，平台规则将原价定义为近7日内该SKU最低成交价；大促活动价还须低于近30天最低成交价，部分类目要求60天。",
+      "expected_documents": ["商品上架与类目合规规范.md", "促销活动与优惠券使用规则.md"],
+      "expected_headings": ["2.3 价格与库存", "5. 大促商家规则（节选）", "7. 合规提示"],
+      "tags": ["promotion", "compliance", "pricing", "multi_document"]
+    },
+    {
+      "id": "merchant_first_listing_requirements",
+      "kb_alias": "ecommerce",
+      "suite": "basic",
+      "case_type": "multi_document",
+      "question": "新店第一次上商品前要准备哪些资质、费用，通常多久能完成审核？",
+      "ground_truth": "商家需提交营业执照、法人和银行账户等主体资质，申请经营类目并提供品牌商标注册证或二级以内授权链，按类目缴纳1000至50000元保证金；普通类目商品审核应在24小时内完成，入驻流程中的首商品上架整体为1至3个工作日。开店费目前为0元，特殊类目除外。",
+      "expected_documents": ["商家入驻结算与对账流程.md", "商品上架与类目合规规范.md"],
+      "expected_headings": ["1. 入驻流程", "1. 上架准入", "4. 审核流程"],
+      "tags": ["merchant", "listing", "qualification", "multi_document"]
+    }
+  ]
+}
