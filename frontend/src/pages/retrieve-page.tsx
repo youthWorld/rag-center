@@ -191,12 +191,12 @@ export function RetrievePage() {
 
       payload.top_k = topKValue;
       payload.retrieval_options = retrievalOptions;
-      if (rerankEnabled && tenantInfo.features.rerank_allowed) {
-        payload.rerank_options = { enabled: true, top_n: rerankTopNValue ?? 5 };
-      }
-      if (queryRewriteEnabled && tenantInfo.features.query_rewrite_allowed) {
-        payload.query_options = { enabled: true, strategy: "rewrite" };
-      }
+      payload.rerank_options = rerankEnabled && tenantInfo.features.rerank_allowed
+        ? { enabled: true, top_n: rerankTopNValue ?? 5 }
+        : { enabled: false };
+      payload.query_options = queryRewriteEnabled && tenantInfo.features.query_rewrite_allowed
+        ? { enabled: true, strategy: "rewrite" }
+        : { enabled: false };
     }
 
     setResult(null);

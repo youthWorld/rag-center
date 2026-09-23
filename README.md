@@ -233,6 +233,10 @@ uv run python scripts/verify_parser_12.py `
 
 `profile` 未传时默认使用 `balanced`。`speed` 使用向量召回，`balanced` 使用混合召回，`quality` 在混合召回基础上启用重排和 query 改写，`custom` 保留请求中的 `retrieval_options`、`rerank_options` 和 `query_options`。可用 profile 和能力上限由租户套餐决定。
 
+检索配置按字段确定优先级：先检查套餐是否允许所选 profile 和最终生效的功能，再由命名 profile 的预设覆盖请求中同名字段；预设未定义的字段仍可由请求提供。`custom` 不展开预设，显式请求值优先，未传的字段依次使用实际环境配置和代码默认值。前端与 curl 的请求优先级相同。即使某字段会被预设覆盖，请求仍须满足 API Schema 的类型和范围校验。环境中的 `RERANK_ENABLED` 与 `QUERY_REWRITE_ENABLED` 是缺省值，不是能否决 profile 或显式请求的全局禁用开关；套餐限制始终有效。
+
+`custom` 下 hybrid 检索的 `top_k` 控制融合后送往后续阶段的候选数量（启用重排时最终返回数量由 `rerank_options.top_n` 控制）；若未传 `retrieval_options.vector_top_k` 或 `bm25_top_k`，分别回退到 `HYBRID_VECTOR_TOP_K` 和 `HYBRID_BM25_TOP_K`，不再跟随请求的 `top_k`。改写的 `query_options.enabled` 若显式传入，优先于 `strategy`：`true` 表示改写，`false` 表示不改写；未传 `enabled` 才由 `strategy` 决定或回退到配置。调试台自定义模式取消勾选重排或改写时会显式发送 `enabled:false`；curl 省略该字段则使用服务端缺省值。
+
 使用 `custom` profile 时，可以通过请求体覆盖检索参数：
 
 ```json

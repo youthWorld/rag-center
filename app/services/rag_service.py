@@ -1215,15 +1215,34 @@ class RagService:
         if "top_k" in preset:
             updates["top_k"] = preset["top_k"]
         if "retrieval_options" in preset:
+            requested = (
+                request.retrieval_options.model_dump(exclude_none=True)
+                if request.retrieval_options is not None
+                else {}
+            )
             updates["retrieval_options"] = RetrievalOptions.model_validate(
-                preset["retrieval_options"]
+                {**requested, **preset["retrieval_options"]}
             )
         if "rerank_options" in preset:
             from app.schemas.rerank import RerankOptions
 
-            updates["rerank_options"] = RerankOptions.model_validate(preset["rerank_options"])
+            requested = (
+                request.rerank_options.model_dump(exclude_none=True)
+                if request.rerank_options is not None
+                else {}
+            )
+            updates["rerank_options"] = RerankOptions.model_validate(
+                {**requested, **preset["rerank_options"]}
+            )
         if "query_options" in preset:
-            updates["query_options"] = QueryOptions.model_validate(preset["query_options"])
+            requested = (
+                request.query_options.model_dump(exclude_none=True)
+                if request.query_options is not None
+                else {}
+            )
+            updates["query_options"] = QueryOptions.model_validate(
+                {**requested, **preset["query_options"]}
+            )
         return request.model_copy(update=updates)
 
     def _enforce_plan_features(
@@ -1295,20 +1314,12 @@ class RagService:
             vector_top_k = (
                 options.vector_top_k
                 if options is not None and options.vector_top_k is not None
-                else (
-                    request.top_k
-                    if request.top_k is not None
-                    else self.settings.hybrid_vector_top_k
-                )
+                else self.settings.hybrid_vector_top_k
             )
             bm25_top_k = (
                 options.bm25_top_k
                 if options is not None and options.bm25_top_k is not None
-                else (
-                    request.top_k
-                    if request.top_k is not None
-                    else self.settings.hybrid_bm25_top_k
-                )
+                else self.settings.hybrid_bm25_top_k
             )
             top_k = request.top_k if request.top_k is not None else self.settings.hybrid_top_n
         elif mode == "bm25":
@@ -1407,10 +1418,10 @@ class RagService:
         options = request.query_options
         if options is None:
             return self.settings.query_rewrite_enabled
-        if options.strategy == "noop":
-            return False
         if options.enabled is not None:
             return options.enabled
+        if options.strategy == "noop":
+            return False
         if options.strategy == "rewrite":
             return True
         return self.settings.query_rewrite_enabled

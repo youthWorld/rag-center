@@ -216,6 +216,28 @@ async def test_rag_service_runs_vector_and_bm25_in_hybrid_mode() -> None:
     assert isinstance(response.metadata["latency_ms"], int)
 
 
+def test_custom_hybrid_top_k_does_not_override_per_channel_env_defaults() -> None:
+    service = _rag_service(retrieval_mode="hybrid")
+    service.settings = Settings(
+        hybrid_vector_top_k=13,
+        hybrid_bm25_top_k=17,
+        hybrid_top_n=19,
+        hybrid_rrf_k=51,
+    )
+    request = RagRetrieveRequest(
+        kb_id="kb-test",
+        user_id="user-test",
+        query="question",
+        profile="custom",
+        top_k=4,
+        retrieval_options={"mode": "hybrid", "vector_top_k": 7},
+    )
+
+    assert service._resolve_retrieval_options(request, "hybrid") == (7, 17, 4, 51)
+    request = request.model_copy(update={"retrieval_options": None})
+    assert service._resolve_retrieval_options(request, "hybrid") == (13, 17, 4, 51)
+
+
 @pytest.mark.asyncio
 async def test_rag_service_preserves_chunk_metadata() -> None:
     service = _rag_service()

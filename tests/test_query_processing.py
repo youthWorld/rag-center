@@ -269,6 +269,34 @@ async def test_pipeline_request_options_override_global_rewrite_setting() -> Non
 
 
 @pytest.mark.asyncio
+async def test_explicit_enabled_wins_over_conflicting_strategy_in_service_and_pipeline() -> None:
+    service = object.__new__(RagService)
+    service.settings = Settings(query_rewrite_enabled=False)
+    llm = FakeLLMProvider({"query": "rewritten"})
+    pipeline = QueryPipeline(
+        rewrite_enabled=False,
+        rewrite_processor=LLMRewriteProcessor(llm),
+    )
+    knowledge_base = SimpleNamespace(name="KB", settings={})
+
+    for enabled, strategy, expected_strategy in (
+        (True, "noop", "rewrite"),
+        (False, "rewrite", "noop"),
+    ):
+        options = {"enabled": enabled, "strategy": strategy}
+        request = RagRetrieveRequest(
+            kb_id="kb-test", user_id="user-test", query="raw", query_options=options
+        )
+        result = await pipeline.process(
+            "raw", knowledge_base=knowledge_base, query_options=request.query_options
+        )
+        assert service._resolve_query_rewrite_enabled(request) is enabled
+        assert result.strategy == expected_strategy
+
+    assert len(llm.calls) == 1
+
+
+@pytest.mark.asyncio
 async def test_pipeline_can_disable_synonym_expansion_per_request() -> None:
     pipeline = QueryPipeline()
     knowledge_base = SimpleNamespace(

@@ -77,7 +77,7 @@ curl.exe -s -X POST "http://127.0.0.1:8000/api/v1/rag/retrieve" `
 
 ### custom
 
-`custom` 需要同时传入高级检索参数。`rerank_options` 和 `query_options` 只有在对应套餐能力可用且本次确实要启用时才传入：
+`custom` 可以逐项传入高级检索参数；未传入的字段使用服务端环境配置或代码默认值。显式传入的开关（包括 `false`）优先于缺省值，调试台取消勾选时会发送 `false`。若 hybrid 请求只传 `top_k`，两路召回数量仍分别使用 `HYBRID_VECTOR_TOP_K` / `HYBRID_BM25_TOP_K`，不会随 `top_k` 改变。套餐仍决定是否允许使用这些能力：
 
 ```powershell
 curl.exe -s -X POST "http://127.0.0.1:8000/api/v1/rag/retrieve" `
@@ -86,7 +86,7 @@ curl.exe -s -X POST "http://127.0.0.1:8000/api/v1/rag/retrieve" `
   -d '{"kb_id":"<knowledge-base-id>","user_id":"user_demo","query":"退款需要几天内申请？","profile":"custom","top_k":8,"retrieval_options":{"mode":"hybrid","vector_top_k":20,"bm25_top_k":20,"rrf_k":60},"rerank_options":{"enabled":true,"top_n":5},"query_options":{"enabled":true,"strategy":"rewrite"}}'
 ```
 
-套餐决定 profile 和能力上限，profile 决定本次请求如何运行。服务端在未传 `profile` 时默认使用 `balanced`；对 `free` 租户应显式传 `speed`，避免请求被套餐校验拒绝。服务端响应的 `metadata.tenant_policy` 会记录实际生效的套餐、profile、检索模式、rerank 和 query 改写状态。
+套餐决定 profile 和能力上限，profile 决定本次请求如何运行。命名 profile 的已定义字段优先于请求；未定义字段才接受请求值。`custom` 的显式请求值优先于环境配置，环境未配置时使用代码默认值。服务端在未传 `profile` 时默认使用 `balanced`；对 `free` 租户应显式传 `speed`，避免请求被套餐校验拒绝。服务端响应的 `metadata.tenant_policy` 会记录实际生效的套餐、profile、检索模式、rerank 和 query 改写状态。
 
 ## 词表配置
 

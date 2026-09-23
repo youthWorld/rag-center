@@ -80,10 +80,10 @@ class QueryPipeline:
         else:
             requested_enabled = getattr(query_options, "enabled", None)
             requested_strategy = getattr(query_options, "strategy", None)
-        if requested_strategy == "noop":
-            return False, "noop"
         if requested_enabled is not None:
             enabled = bool(requested_enabled)
+        elif requested_strategy == "noop":
+            enabled = False
         elif requested_strategy == "rewrite":
             enabled = True
         else:
