@@ -46,9 +46,9 @@ class LLMRerankProvider(RerankProvider):
     def from_settings(cls, llm_provider: LLMProvider, settings: Settings) -> "LLMRerankProvider":
         return cls(
             llm_provider,
-            max_candidates=settings.rerank_max_candidates,
-            chunk_max_chars=settings.rerank_chunk_max_chars,
-            temperature=settings.rerank_temperature,
+            max_candidates=20,
+            chunk_max_chars=1000,
+            temperature=0.0,
             timeout_seconds=settings.llm_timeout_seconds,
         )
 

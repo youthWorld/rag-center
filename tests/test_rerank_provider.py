@@ -7,8 +7,8 @@ import pytest
 from app.core.config import Settings
 from app.providers.llm.base import LLMProvider, LLMProviderError
 from app.providers.llm.openai_compatible import OpenAICompatibleLLMProvider
-from app.providers.rerank.llm import LLMRerankProvider
 from app.providers.rerank.noop import NoopRerankProvider
+from eval.providers.llm_rerank_baseline import LLMRerankProvider
 
 
 class FakeLLMProvider(LLMProvider):

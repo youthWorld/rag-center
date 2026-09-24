@@ -77,6 +77,34 @@ class HttpRetrievalClient:
             raise EvaluationRunError("retrieve response has no data object")
         return data
 
+    async def check_access(self, kb_ids: list[str], tenant_id: str | None) -> None:
+        """Fail before paid evaluation calls when auth, plan, or corpus access is invalid."""
+        try:
+            response = await self._client.get("/api/v1/auth/me")
+            auth = response.json()
+            data = auth.get("data") if isinstance(auth, dict) else None
+            if response.status_code != 200 or not isinstance(data, dict):
+                raise EvaluationRunError("evaluation tenant authentication failed")
+            if tenant_id and data.get("tenant_id") != tenant_id:
+                raise EvaluationRunError("evaluation key belongs to a different tenant")
+            features = data.get("features") or {}
+            if not features.get("hybrid_allowed") or not features.get("rerank_allowed"):
+                raise EvaluationRunError("evaluation tenant plan must allow hybrid and rerank")
+            for kb_id in kb_ids:
+                response = await self._client.get(f"/api/v1/knowledge-bases/{kb_id}")
+                body = response.json()
+                kb = body.get("data") if isinstance(body, dict) else None
+                if response.status_code != 200 or not isinstance(kb, dict):
+                    raise EvaluationRunError("evaluation knowledge base is not accessible")
+                if not kb.get("document_count", 0):
+                    raise EvaluationRunError("evaluation knowledge base has no documents")
+        except (httpx.HTTPError, ValueError) as exc:
+            if isinstance(exc, EvaluationRunError):
+                raise
+            raise EvaluationRunError(
+                f"evaluation access check failed ({type(exc).__name__})"
+            ) from None
+
 
 class EvaluationRunner:
     def __init__(

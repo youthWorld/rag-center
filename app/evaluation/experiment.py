@@ -63,9 +63,7 @@ def validate_experiment(payload: dict[str, Any]) -> None:
 
     primary_metric = _require_text(payload, "primary_metric", errors, location="root")
     if primary_metric and primary_metric not in SUPPORTED_PRIMARY_METRICS:
-        errors.append(
-            f"root.primary_metric must be one of {sorted(SUPPORTED_PRIMARY_METRICS)}"
-        )
+        errors.append(f"root.primary_metric must be one of {sorted(SUPPORTED_PRIMARY_METRICS)}")
 
     for field in ("concurrency", "ragas_concurrency", "timeout_seconds"):
         _require_positive_int(payload, field, errors, location="root")
@@ -85,6 +83,9 @@ def validate_experiment(payload: dict[str, Any]) -> None:
             errors.append("root.changed_fields must not contain duplicates")
 
     expanded_groups: dict[str, dict[str, Any]] = {}
+    rerank_experiment = payload.get("rerank_experiment")
+    if rerank_experiment is not None and rerank_experiment not in {"effect", "upgrade"}:
+        errors.append("root.rerank_experiment must be effect or upgrade")
     for group_name in GROUP_NAMES:
         group = payload.get(group_name)
         if not isinstance(group, dict):
@@ -96,7 +97,44 @@ def validate_experiment(payload: dict[str, Any]) -> None:
         except ExperimentValidationError as exc:
             errors.extend(f"root.{group_name}: {error}" for error in exc.errors)
 
-    if len(expanded_groups) == 2 and changed_fields:
+    if rerank_experiment and len(expanded_groups) == 2:
+        expected_rerankers = (
+            {"baseline": "none", "candidate": "qwen37"}
+            if rerank_experiment == "effect"
+            else {"baseline": "llm", "candidate": "qwen37"}
+        )
+        for group_name in GROUP_NAMES:
+            if payload[group_name].get("offline_reranker") != expected_rerankers[group_name]:
+                errors.append(
+                    f"{group_name}.offline_reranker must be {expected_rerankers[group_name]}"
+                )
+            config = expanded_groups[group_name]
+            if config.get("profile") != "custom" or config.get("top_k") != 20:
+                errors.append(f"{group_name} must use custom RRF Top20")
+            retrieval = config.get("retrieval_options", {})
+            query = config.get("query_options", {})
+            rerank = config.get("rerank_options", {})
+            if (
+                retrieval.get("mode") != "hybrid"
+                or retrieval.get("vector_top_k", 0) < 20
+                or retrieval.get("bm25_top_k", 0) < 20
+                or rerank != {"enabled": False, "top_n": 10}
+                or query.get("enabled") is not False
+                or query.get("strategy") != "noop"
+                or query.get("synonym_enabled") is not False
+            ):
+                errors.append(f"{group_name} must disable rewrite, synonym and online rerank")
+        if expanded_groups["baseline"] != expanded_groups["candidate"]:
+            errors.append("rerank experiment groups must use identical retrieval settings")
+        if changed_fields != ["offline_reranker"]:
+            errors.append("rerank experiment changed_fields must be ['offline_reranker']")
+        if (
+            payload.get("warmup_cases") != 0
+            or payload.get("concurrency") != 4
+            or payload.get("ragas_concurrency") != 4
+        ):
+            errors.append("rerank experiments require no warm-up and concurrency 4/4")
+    elif len(expanded_groups) == 2 and changed_fields:
         actual_differences = diff_paths(
             _comparison_config(expanded_groups["baseline"]),
             _comparison_config(expanded_groups["candidate"]),
@@ -123,7 +161,7 @@ def expand_group(group: dict[str, Any]) -> dict[str, Any]:
         )
 
     request_fields = {key: value for key, value in group.items() if key in GROUP_REQUEST_FIELDS}
-    unknown_fields = sorted(set(group) - GROUP_REQUEST_FIELDS - {"label"})
+    unknown_fields = sorted(set(group) - GROUP_REQUEST_FIELDS - {"label", "offline_reranker"})
     if unknown_fields:
         errors.append(f"unsupported group fields: {unknown_fields}")
 
@@ -259,9 +297,7 @@ def _validate_decision(value: Any, errors: list[str]) -> None:
                 errors.append(f"root.decision.cost_limits.{field} must be non-negative")
 
 
-def _require_text(
-    value: dict[str, Any], field: str, errors: list[str], *, location: str
-) -> str:
+def _require_text(value: dict[str, Any], field: str, errors: list[str], *, location: str) -> str:
     raw = value.get(field)
     if not isinstance(raw, str) or not raw.strip():
         errors.append(f"{location}.{field} must be a non-empty string")
@@ -278,6 +314,8 @@ def _require_positive_int(
 
 
 def _is_finite_number(value: Any) -> bool:
-    return isinstance(value, (int, float)) and not isinstance(value, bool) and float(
-        "-inf"
-    ) < float(value) < float("inf")
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and float("-inf") < float(value) < float("inf")
+    )

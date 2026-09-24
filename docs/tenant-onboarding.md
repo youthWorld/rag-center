@@ -41,9 +41,9 @@ uv run python scripts/update_tenant_plan.py --tenant-id tenant_demo --plan pro
 
 `profile` 描述这一次检索采用的策略。每次请求建议显式传入它：
 
-- `speed`：向量召回，默认返回 3 个结果，延迟最低。
-- `balanced`：hybrid 融合召回，默认返回 5 个结果。
-- `quality`：hybrid 融合召回，并启用 rerank 和 query 改写，默认返回 8 个结果。
+- `speed`：向量召回，最多返回 Top5，不精排。
+- `balanced`：hybrid 融合召回，最多返回 Top10，不精排。
+- `quality`：两路召回经 RRF 融合最多 Top20 候选，使用 qwen3.7-text-rerank 精排后最多返回 Top10；保留 query 改写和同义词扩展。
 - `custom`：由请求体中的高级参数决定，适合调试和对比实验。
 
 ### speed

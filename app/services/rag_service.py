@@ -1,4 +1,5 @@
 import asyncio
+import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -78,9 +79,7 @@ class RagService:
         self.hybrid_search_service = hybrid_search_service or HybridSearchService(
             rrf_k=settings.hybrid_rrf_k
         )
-        self.multi_kb_fusion_service = MultiKBFusionService(
-            rrf_k=settings.hybrid_rrf_k
-        )
+        self.multi_kb_fusion_service = MultiKBFusionService(rrf_k=settings.hybrid_rrf_k)
         self.rerank_provider = rerank_provider or NoopRerankProvider()
         self.query_pipeline = query_pipeline or QueryPipeline(
             rewrite_enabled=settings.query_rewrite_enabled
@@ -243,8 +242,7 @@ class RagService:
             except Exception as exception:
                 vector_error = exception
                 self.logger.exception(
-                    "VECTOR_QUERY_EMBEDDING_FAILED | tenant_id=%s | kb_id=%s | query=%s | "
-                    "error=%s",
+                    "VECTOR_QUERY_EMBEDDING_FAILED | tenant_id=%s | kb_id=%s | query=%s | error=%s",
                     tenant_id,
                     knowledge_base.id,
                     search_query,
@@ -305,8 +303,9 @@ class RagService:
         rerank_degraded = False
         rerank_error: str | None = None
         reranked = retrieved
-        if rerank_enabled:
-            rerank_candidates = retrieved[: self.settings.rerank_max_candidates]
+        rerank_started = time.perf_counter()
+        if rerank_enabled and retrieved:
+            rerank_candidates = retrieved[:50]
             candidate_count = len(rerank_candidates)
             try:
                 reranked = await self.rerank_provider.rerank(
@@ -316,9 +315,9 @@ class RagService:
                 )
             except Exception as exception:
                 rerank_degraded = True
-                rerank_error = str(exception) or type(exception).__name__
-                reranked = retrieved
-                self.logger.exception(
+                rerank_error = self._safe_rerank_error(exception)
+                reranked = [{**item, "rerank_score": None} for item in rerank_candidates]
+                self.logger.warning(
                     "BUSINESS_EVENT | event=rag_rerank_degraded | kb_id=%s | "
                     "candidate_count=%s | error=%s",
                     knowledge_base.id,
@@ -326,10 +325,13 @@ class RagService:
                     rerank_error,
                 )
 
+        rerank_latency_ms = (
+            int((time.perf_counter() - rerank_started) * 1000) if candidate_count else 0
+        )
         rerank_model_calls = int(
             rerank_enabled
             and candidate_count > 0
-            and self.settings.rerank_provider != "noop"
+            and not isinstance(self.rerank_provider, NoopRerankProvider)
         )
         application_model_call_details = {
             "query_rewrite": query_processing.application_model_calls,
@@ -343,11 +345,7 @@ class RagService:
         )
 
         latency_ms = int((time.perf_counter() - started_at) * 1000)
-        response_chunks = (
-            reranked[:rerank_top_n]
-            if rerank_enabled and not rerank_degraded
-            else reranked
-        )
+        response_chunks = reranked[:rerank_top_n] if rerank_enabled else reranked
         retrieved_chunks = [
             RetrievedChunk(
                 document_id=item["document_id"],
@@ -367,9 +365,7 @@ class RagService:
                 bm25_rank=item.get("bm25_rank"),
                 retrieval_source=item.get("retrieval_source", "vector"),
                 rerank_score=(
-                    float(item["rerank_score"])
-                    if item.get("rerank_score") is not None
-                    else None
+                    float(item["rerank_score"]) if item.get("rerank_score") is not None else None
                 ),
                 metadata=dict(item.get("metadata") or {}),
             )
@@ -427,15 +423,15 @@ class RagService:
                 "latency_ms": latency_ms,
                 "vector_store": self.settings.vector_store,
                 "query_processing": (
-                    query_processing.to_dict()
-                    if query_processing.should_expose()
-                    else None
+                    query_processing.to_dict() if query_processing.should_expose() else None
                 ),
                 "retrieval": retrieval_metadata,
                 "rerank": self._build_rerank_metadata(
                     enabled=rerank_enabled,
                     top_n=rerank_top_n,
                     candidate_count=candidate_count,
+                    returned_count=len(response_chunks),
+                    latency_ms=rerank_latency_ms,
                     degraded=rerank_degraded,
                     error=rerank_error,
                 ),
@@ -588,8 +584,7 @@ class RagService:
             raise AppError(
                 code=ErrorCode.RETRIEVAL_FAILED,
                 internal_message=(
-                    "retrieval failed for knowledge bases: "
-                    f"{', '.join(failed_kb_ids) or 'unknown'}"
+                    f"retrieval failed for knowledge bases: {', '.join(failed_kb_ids) or 'unknown'}"
                 ),
                 context={
                     "kb_ids": kb_ids,
@@ -658,8 +653,9 @@ class RagService:
         rerank_degraded = False
         rerank_error: str | None = None
         reranked = retrieved
-        if rerank_enabled:
-            rerank_candidates = retrieved[: self.settings.rerank_max_candidates]
+        rerank_started = time.perf_counter()
+        if rerank_enabled and retrieved:
+            rerank_candidates = retrieved[:50]
             candidate_count = len(rerank_candidates)
             try:
                 reranked = await self.rerank_provider.rerank(
@@ -669,9 +665,9 @@ class RagService:
                 )
             except Exception as exception:
                 rerank_degraded = True
-                rerank_error = str(exception) or type(exception).__name__
-                reranked = retrieved
-                self.logger.exception(
+                rerank_error = self._safe_rerank_error(exception)
+                reranked = [{**item, "rerank_score": None} for item in rerank_candidates]
+                self.logger.warning(
                     "BUSINESS_EVENT | event=rag_rerank_degraded | kb_ids=%s | "
                     "candidate_count=%s | error=%s",
                     kb_ids,
@@ -679,10 +675,13 @@ class RagService:
                     rerank_error,
                 )
 
+        rerank_latency_ms = (
+            int((time.perf_counter() - rerank_started) * 1000) if candidate_count else 0
+        )
         rerank_model_calls = int(
             rerank_enabled
             and candidate_count > 0
-            and self.settings.rerank_provider != "noop"
+            and not isinstance(self.rerank_provider, NoopRerankProvider)
         )
         application_model_call_details = {
             "query_rewrite": query_processing.application_model_calls,
@@ -696,11 +695,7 @@ class RagService:
         )
 
         latency_ms = int((time.perf_counter() - started_at) * 1000)
-        response_chunks = (
-            reranked[:rerank_top_n]
-            if rerank_enabled and not rerank_degraded
-            else reranked
-        )
+        response_chunks = reranked[:rerank_top_n] if rerank_enabled else reranked
         retrieved_chunks = [
             RetrievedChunk(
                 document_id=item["document_id"],
@@ -716,9 +711,7 @@ class RagService:
                 bm25_rank=item.get("bm25_rank"),
                 retrieval_source=item.get("retrieval_source", "vector"),
                 rerank_score=(
-                    float(item["rerank_score"])
-                    if item.get("rerank_score") is not None
-                    else None
+                    float(item["rerank_score"]) if item.get("rerank_score") is not None else None
                 ),
                 metadata=dict(item.get("metadata") or {}),
             )
@@ -777,15 +770,15 @@ class RagService:
                 "latency_ms": latency_ms,
                 "vector_store": self.settings.vector_store,
                 "query_processing": (
-                    query_processing.to_dict()
-                    if query_processing.should_expose()
-                    else None
+                    query_processing.to_dict() if query_processing.should_expose() else None
                 ),
                 "retrieval": retrieval_metadata,
                 "rerank": self._build_rerank_metadata(
                     enabled=rerank_enabled,
                     top_n=rerank_top_n,
                     candidate_count=candidate_count,
+                    returned_count=len(response_chunks),
+                    latency_ms=rerank_latency_ms,
                     degraded=rerank_degraded,
                     error=rerank_error,
                 ),
@@ -825,9 +818,7 @@ class RagService:
             vector_started_at = time.perf_counter()
             if query_vector is None:
                 vector_failed = True
-                vector_exception = vector_exception or RuntimeError(
-                    "query vector is not available"
-                )
+                vector_exception = vector_exception or RuntimeError("query vector is not available")
                 self.logger.error(
                     "VECTOR_SEARCH_FAILED | tenant_id=%s | kb_id=%s | query=%s | "
                     "vector_top_k=%s | cost_ms=%s | error=%s",
@@ -935,8 +926,7 @@ class RagService:
             vector_detail = str(vector_exception) or type(vector_exception).__name__
             bm25_detail = str(bm25_exception) or type(bm25_exception).__name__
             error = RuntimeError(
-                f"vector search failed: {vector_detail}; "
-                f"bm25 search failed: {bm25_detail}"
+                f"vector search failed: {vector_detail}; bm25 search failed: {bm25_detail}"
             )
             raise self._build_retrieval_failed_error(
                 kb_id=str(knowledge_base.id),
@@ -1103,10 +1093,7 @@ class RagService:
 
         try:
             counts = await asyncio.gather(
-                *(
-                    count_indexed_chunks(kb_id=kb_id, tenant_id=tenant_id)
-                    for kb_id in kb_ids
-                )
+                *(count_indexed_chunks(kb_id=kb_id, tenant_id=tenant_id) for kb_id in kb_ids)
             )
         except Exception as exception:
             self.logger.warning(
@@ -1118,9 +1105,7 @@ class RagService:
             return "no_chunks_matched"
 
         return (
-            "no_indexed_chunks"
-            if sum(int(count) for count in counts) == 0
-            else "no_chunks_matched"
+            "no_indexed_chunks" if sum(int(count) for count in counts) == 0 else "no_chunks_matched"
         )
 
     @staticmethod
@@ -1277,9 +1262,7 @@ class RagService:
 
     def _resolve_retrieval_mode(self, request: RagRetrieveRequest) -> RetrievalMode:
         requested_mode = (
-            request.retrieval_options.mode
-            if request.retrieval_options is not None
-            else None
+            request.retrieval_options.mode if request.retrieval_options is not None else None
         )
         mode = requested_mode or self.settings.retrieval_mode
         if mode not in {"vector", "bm25", "hybrid"}:
@@ -1372,9 +1355,7 @@ class RagService:
             "rrf_k": rrf_k if mode == "hybrid" else None,
             "vector_store": self.settings.vector_store,
             "keyword_search": (
-                self.settings.keyword_search_provider
-                if mode in {"bm25", "hybrid"}
-                else None
+                self.settings.keyword_search_provider if mode in {"bm25", "hybrid"} else None
             ),
             "vector_top_k": vector_top_k,
             "bm25_top_k": bm25_top_k,
@@ -1437,19 +1418,40 @@ class RagService:
         enabled: bool,
         top_n: int,
         candidate_count: int,
+        returned_count: int,
+        latency_ms: int,
         degraded: bool,
         error: str | None,
     ) -> dict[str, Any]:
-        provider = self.settings.rerank_provider if enabled else "noop"
+        provider = "qwen3.7" if enabled else "noop"
         metadata: dict[str, Any] = {
             "enabled": enabled,
             "provider": provider,
-            "llm_provider": self.settings.llm_provider if provider == "llm" else None,
-            "model": self.settings.llm_model if provider == "llm" else None,
+            "model": self.settings.rerank_model if enabled else None,
             "top_n": top_n,
             "candidate_count": candidate_count,
+            "returned_count": returned_count,
+            "latency_ms": latency_ms,
+            "degraded": degraded,
         }
         if degraded:
-            metadata["degraded"] = True
             metadata["error"] = error or "rerank failed"
         return metadata
+
+    @staticmethod
+    def _safe_rerank_error(exception: Exception) -> str:
+        # Never surface an arbitrary provider exception: it may contain request headers,
+        # a URL with credentials, or candidate text.
+        safe_messages = {
+            "rerank request timed out",
+            "rerank response missing output",
+            "rerank response has invalid results count",
+            "rerank result must be an object",
+            "rerank result has invalid index",
+            "rerank result has invalid score",
+            "rerank credentials or endpoint not configured",
+        }
+        message = str(exception)
+        if message in safe_messages or re.fullmatch(r"rerank HTTP [1-5][0-9]{2}", message):
+            return message
+        return f"rerank failed ({type(exception).__name__})"

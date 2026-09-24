@@ -90,11 +90,11 @@ def test_named_profile_expands_existing_project_preset() -> None:
 
     assert expanded["retrieval_options"] == {
         "mode": "hybrid",
-        "vector_top_k": 8,
-        "bm25_top_k": 8,
+        "vector_top_k": 20,
+        "bm25_top_k": 20,
         "rrf_k": 60,
     }
-    assert expanded["rerank_options"] == {"enabled": True, "top_n": 5}
+    assert expanded["rerank_options"] == {"enabled": True, "top_n": 10}
     assert expanded["query_options"] == {
         "enabled": True,
         "strategy": "rewrite",

@@ -13,8 +13,7 @@ from app.providers.llm.openai_compatible import OpenAICompatibleLLMProvider
 from app.providers.query.llm_rewrite import LLMRewriteProcessor
 from app.providers.query.pipeline import QueryPipeline
 from app.providers.rerank.base import RerankProvider
-from app.providers.rerank.llm import LLMRerankProvider
-from app.providers.rerank.noop import NoopRerankProvider
+from app.providers.rerank.qwen37 import Qwen37RerankProvider
 from app.providers.vectorstores.pgvector import PgVectorStore
 from app.repositories.document_repository import DocumentRepository
 from app.repositories.knowledge_base_repository import KnowledgeBaseRepository
@@ -69,17 +68,7 @@ async def get_rate_limit_service(
 
 
 def get_rerank_provider(app_settings: Settings) -> RerankProvider:
-    if app_settings.rerank_provider == "noop":
-        return NoopRerankProvider()
-    if app_settings.rerank_provider == "llm":
-        return LLMRerankProvider.from_settings(
-            get_llm_provider(app_settings),
-            app_settings,
-        )
-    raise ServiceConfigurationError(
-        internal_message=f"unsupported RERANK_PROVIDER: {app_settings.rerank_provider}",
-        context={"provider": app_settings.rerank_provider},
-    )
+    return Qwen37RerankProvider.from_settings(app_settings)
 
 
 def get_keyword_search_provider(app_settings: Settings) -> KeywordSearchProvider:

@@ -231,7 +231,7 @@ uv run python scripts/verify_parser_12.py `
 
 接口只返回结构化召回 chunk、引用来源、分数和检索元数据，不生成最终答案。业务方可以使用这些上下文调用自己的大模型或编排服务。
 
-`profile` 未传时默认使用 `balanced`。`speed` 使用向量召回，`balanced` 使用混合召回，`quality` 在混合召回基础上启用重排和 query 改写，`custom` 保留请求中的 `retrieval_options`、`rerank_options` 和 `query_options`。可用 profile 和能力上限由租户套餐决定。
+`profile` 未传时默认使用 `balanced`。`speed` 向量检索最多返回 Top5，`balanced` 混合检索最多返回 Top10，两者不精排；`quality` 从向量与 BM25 召回、经 RRF 融合最多 Top20 候选，交给 qwen3.7-text-rerank 精排后最多返回 Top10，并保留 query 改写和同义词扩展。`custom` 保留请求中的 `retrieval_options`、`rerank_options` 和 `query_options`。可用 profile 和能力上限由租户套餐决定。
 
 检索配置按字段确定优先级：先检查套餐是否允许所选 profile 和最终生效的功能，再由命名 profile 的预设覆盖请求中同名字段；预设未定义的字段仍可由请求提供。`custom` 不展开预设，显式请求值优先，未传的字段依次使用实际环境配置和代码默认值。前端与 curl 的请求优先级相同。即使某字段会被预设覆盖，请求仍须满足 API Schema 的类型和范围校验。环境中的 `RERANK_ENABLED` 与 `QUERY_REWRITE_ENABLED` 是缺省值，不是能否决 profile 或显式请求的全局禁用开关；套餐限制始终有效。
 
@@ -257,24 +257,26 @@ uv run python scripts/verify_parser_12.py `
 
 hybrid 模式先合并两路召回结果，再按 `1 / (rrf_k + rank)` 计算 RRF 分数。响应中的 `score` 是融合分数，同时保留 `vector_score`、`bm25_score`、两路排名和 `retrieval_source`。
 
-通过 `rerank_options` 可以在向量召回后启用大模型重排序：
+通过 `rerank_options` 可以在融合候选上启用百炼专用精排：
 
 ```json
 {
   "kb_id": "<knowledge-base-id>",
   "user_id": "user_demo",
   "query": "退款需要几天内申请？",
+  "profile": "custom",
   "top_k": 20,
+  "retrieval_options": {"mode": "hybrid"},
   "rerank_options": {
     "enabled": true,
-    "top_n": 5
+    "top_n": 10
   }
 }
 ```
 
-启用后，接口会保留原始向量分数 `score`，并在 `retrieved_chunks` 中返回 `rerank_score`。重排序失败时会记录降级日志并返回原始向量排序结果。
+启用后，接口保留原始融合分数 `score`，并在 `retrieved_chunks` 中返回 `rerank_score`。失败时按 RRF 顺序回退到最多 `top_n` 条，分数为 null。
 
-重排序由 `LLMRerankProvider` 通过通用 `LLMProvider` 调用 OpenAI-compatible Chat Completions，不绑定具体模型厂商。相关配置包括 `LLM_PROVIDER`、`LLM_BASE_URL`、`LLM_API_KEY`、`LLM_MODEL`、`RERANK_ENABLED`、`RERANK_TOP_N`、`RERANK_MAX_CANDIDATES` 和 `RERANK_CHUNK_MAX_CHARS`，完整示例见 `.env.example`。
+生产精排使用百炼 `qwen3.7-text-rerank` 原生 API（`/api/v1/services/rerank/text-rerank/text-rerank`），不能使用旧模型的 compatible `/reranks` 接口。环境配置为 `RERANK_BASE_URL`（已开通模型的公共端点可用 `https://dashscope.aliyuncs.com/api/v1`，也可用工作空间的 `/api/v1` 地址）、`RERANK_API_KEY`（空值复用 `MODEL_API_KEY`）、`RERANK_MODEL`、`RERANK_TIMEOUT_SECONDS` 及默认 `RERANK_TOP_N`；旧 LLM 重排仅供统一离线评测作 baseline。本地评测租户 Key 写入 `EVAL_API_KEY`，不要提交真实值。完整示例见 `.env.example`。
 
 ### 提问语义优化
 

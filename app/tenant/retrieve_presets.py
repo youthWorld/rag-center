@@ -5,14 +5,14 @@ from typing import Any
 
 RETRIEVE_PROFILE_PRESETS: dict[str, dict[str, Any]] = {
     "speed": {
-        "top_k": 3,
+        "top_k": 5,
         "retrieval_options": {
             "mode": "vector",
-            "vector_top_k": 3,
+            "vector_top_k": 5,
         },
         "rerank_options": {
             "enabled": False,
-            "top_n": 5,
+            "top_n": 10,
         },
         "query_options": {
             "enabled": False,
@@ -21,16 +21,16 @@ RETRIEVE_PROFILE_PRESETS: dict[str, dict[str, Any]] = {
         },
     },
     "balanced": {
-        "top_k": 5,
+        "top_k": 10,
         "retrieval_options": {
             "mode": "hybrid",
-            "vector_top_k": 5,
-            "bm25_top_k": 5,
+            "vector_top_k": 10,
+            "bm25_top_k": 10,
             "rrf_k": 60,
         },
         "rerank_options": {
             "enabled": False,
-            "top_n": 5,
+            "top_n": 10,
         },
         "query_options": {
             "enabled": False,
@@ -39,16 +39,16 @@ RETRIEVE_PROFILE_PRESETS: dict[str, dict[str, Any]] = {
         },
     },
     "quality": {
-        "top_k": 8,
+        "top_k": 20,
         "retrieval_options": {
             "mode": "hybrid",
-            "vector_top_k": 8,
-            "bm25_top_k": 8,
+            "vector_top_k": 20,
+            "bm25_top_k": 20,
             "rrf_k": 60,
         },
         "rerank_options": {
             "enabled": True,
-            "top_n": 5,
+            "top_n": 10,
         },
         "query_options": {
             "enabled": True,

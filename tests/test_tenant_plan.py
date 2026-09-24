@@ -138,7 +138,7 @@ async def test_free_speed_profile_succeeds_and_exposes_policy() -> None:
         "effective_rerank": False,
         "effective_query_rewrite": False,
     }
-    assert response.metadata["top_k"] == 3
+    assert response.metadata["top_k"] == 5
 
 
 @pytest.mark.asyncio
@@ -215,9 +215,9 @@ async def test_named_profile_overrides_explicit_request_before_feature_checks() 
         tenant_id="tenant-test",
     )
 
-    assert response.metadata["top_k"] == 5
+    assert response.metadata["top_k"] == 10
     assert response.metadata["retrieval"]["mode"] == "hybrid"
-    assert response.metadata["retrieval"]["vector_top_k"] == 5
+    assert response.metadata["retrieval"]["vector_top_k"] == 10
     assert response.metadata["tenant_policy"]["effective_rerank"] is False
     assert response.metadata["tenant_policy"]["effective_query_rewrite"] is False
 
@@ -255,7 +255,7 @@ def test_named_profile_preserves_fields_not_defined_in_preset() -> None:
     effective = RagService._expand_profile(request, "speed")
 
     assert effective.retrieval_options.mode == "vector"
-    assert effective.retrieval_options.vector_top_k == 3
+    assert effective.retrieval_options.vector_top_k == 5
     assert effective.retrieval_options.rrf_k == 42
     assert request.retrieval_options.mode == "hybrid"
 

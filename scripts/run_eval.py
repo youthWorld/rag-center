@@ -10,6 +10,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from app.core.config import Settings  # noqa: E402
 from app.evaluation.dataset import DatasetValidationError, load_and_validate_dataset  # noqa: E402
 from app.evaluation.experiment import (  # noqa: E402
     ExperimentValidationError,
@@ -17,6 +18,7 @@ from app.evaluation.experiment import (  # noqa: E402
 )
 from app.evaluation.metrics import score_run  # noqa: E402
 from app.evaluation.report import write_report  # noqa: E402
+from app.evaluation.rerank_runner import RerankEvaluationRunner  # noqa: E402
 from app.evaluation.runner import (  # noqa: E402
     EvaluationRunError,
     EvaluationRunner,
@@ -40,9 +42,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     validate_experiment_parser.add_argument("--experiment", type=Path, required=True)
 
-    run_parser = subparsers.add_parser(
-        "run", help="Run baseline and candidate retrieval requests."
-    )
+    run_parser = subparsers.add_parser("run", help="Run baseline and candidate retrieval requests.")
     run_parser.add_argument("--experiment", type=Path, required=True)
     run_parser.add_argument(
         "--base-url",
@@ -56,6 +56,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     run_parser.add_argument("--limit", type=int)
     run_parser.add_argument("--output-suffix")
+    run_parser.add_argument(
+        "--tenant-id", help="Evaluation tenant identifier for audit (API key determines access)."
+    )
 
     score_parser = subparsers.add_parser(
         "score", help="Score saved raw contexts without retrieving again."
@@ -104,7 +107,10 @@ def main() -> int:
             experiment = load_and_validate_experiment(args.experiment)
             dataset_path = _resolve_project_path(experiment["dataset"])
             dataset = load_and_validate_dataset(dataset_path)
-            api_key = os.getenv("EVAL_API_KEY") or os.getenv("RAG_CENTER_API_KEY")
+            api_key = (
+                os.getenv("EVAL_API_KEY") or os.getenv("RAG_CENTER_API_KEY")
+                or Settings().eval_api_key
+            )
             if not api_key:
                 raise EvaluationRunError(
                     "EVAL_API_KEY or RAG_CENTER_API_KEY must be set in the environment"
@@ -119,6 +125,7 @@ def main() -> int:
                     output_root=args.output_root,
                     limit=args.limit,
                     output_suffix=args.output_suffix,
+                    tenant_id=args.tenant_id,
                 )
             )
             comparison = score_run(run_dir)
@@ -136,16 +143,17 @@ def main() -> int:
             f"evaluation complete: run_dir={run_dir} "
             f"verdict={comparison['verdict']} report={report_path}"
         )
-        return 0
+        return int(
+            bool(experiment.get("rerank_experiment"))
+            and comparison["verdict"] == "evaluation_failed"
+        )
     if args.command == "score":
         try:
             comparison = score_run(args.run_dir)
         except (OSError, ValueError) as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 1
-        print(
-            f"scoring complete: run_dir={args.run_dir} verdict={comparison['verdict']}"
-        )
+        print(f"scoring complete: run_dir={args.run_dir} verdict={comparison['verdict']}")
         return 0
     if args.command == "report":
         try:
@@ -173,13 +181,17 @@ async def _run_retrievals(
     output_root: Path,
     limit: int | None,
     output_suffix: str | None,
+    tenant_id: str | None = None,
 ) -> Path:
     async with HttpRetrievalClient(
         base_url=base_url,
         api_key=api_key,
         timeout_seconds=experiment["timeout_seconds"],
     ) as client:
-        runner = EvaluationRunner(
+        runner_cls = (
+            RerankEvaluationRunner if experiment.get("rerank_experiment") else EvaluationRunner
+        )
+        runner = runner_cls(
             project_root=PROJECT_ROOT,
             experiment=experiment,
             dataset=dataset,
@@ -187,8 +199,23 @@ async def _run_retrievals(
             output_root=output_root,
             limit=limit,
             output_suffix=output_suffix,
+            **(
+                {"settings": Settings(), "tenant_id": tenant_id}
+                if experiment.get("rerank_experiment")
+                else {}
+            ),
         )
-        return await runner.run()
+        run_dir = await runner.run()
+        if tenant_id:
+            import json
+
+            from app.evaluation.storage import write_json
+
+            path = run_dir / "manifest.json"
+            manifest = json.loads(path.read_text(encoding="utf-8"))
+            manifest["tenant_id"] = tenant_id
+            write_json(path, manifest)
+        return run_dir
 
 
 if __name__ == "__main__":

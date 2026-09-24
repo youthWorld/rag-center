@@ -13,6 +13,7 @@ from app.evaluation.storage import read_jsonl, write_json
 
 QUALITY_METRICS = ("context_recall", "context_precision")
 VERDICT_TEXT = {
+    "preflight_only": "预检完成，不形成正式结论",
     "effective": "有效，建议启用",
     "effective_high_cost": "有效但成本较高，建议按场景启用",
     "no_clear_benefit": "无明显收益，暂不启用",
@@ -244,6 +245,8 @@ def build_comparison(
         delta=delta,
     )
     verdict = _decide_verdict(checks)
+    if experiment.get("rerank_experiment") and manifest["case_count"] != 20 and checks["complete"]:
+        verdict = "preflight_only"
     return {
         "schema_version": "1.0",
         "experiment_id": experiment["experiment_id"],
@@ -447,6 +450,7 @@ def _decide_verdict(checks: dict[str, Any]) -> str:
 def _recommendation(verdict: str) -> str:
     return {
         "effective": "在本实验固定条件下建议启用；不自动修改线上预设。",
+        "preflight_only": "仅验证执行链路，须完成 20 题正式实验后再判断效果。",
         "effective_high_cost": "仅建议在质量优先或复杂问题场景启用。",
         "no_clear_benefit": "当前数据集未证明稳定收益，暂不调整默认配置。",
         "negative": "候选方案触发质量回归，建议保持或恢复基线配置。",

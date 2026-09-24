@@ -69,7 +69,7 @@ export function RetrievePage() {
   const [bm25TopK, setBm25TopK] = useState("20");
   const [rrfK, setRrfK] = useState("60");
   const [rerankEnabled, setRerankEnabled] = useState(false);
-  const [rerankTopN, setRerankTopN] = useState("5");
+  const [rerankTopN, setRerankTopN] = useState("10");
   const [queryRewriteEnabled, setQueryRewriteEnabled] = useState(false);
   const [result, setResult] = useState<RagRetrieveResponse | null>(null);
   const [isRunning, setIsRunning] = useState(false);
@@ -192,7 +192,7 @@ export function RetrievePage() {
       payload.top_k = topKValue;
       payload.retrieval_options = retrievalOptions;
       payload.rerank_options = rerankEnabled && tenantInfo.features.rerank_allowed
-        ? { enabled: true, top_n: rerankTopNValue ?? 5 }
+        ? { enabled: true, top_n: rerankTopNValue ?? 10 }
         : { enabled: false };
       payload.query_options = queryRewriteEnabled && tenantInfo.features.query_rewrite_allowed
         ? { enabled: true, strategy: "rewrite" }
@@ -384,7 +384,7 @@ export function RetrievePage() {
             <p className="border-b border-line pb-3 text-[10px] font-bold uppercase tracking-[0.16em] text-muted">检索参数</p>
             {profile === "custom" ? (
               <div className="mt-4 space-y-4">
-                <FieldRow label="top_k" help="最终返回的 chunk 数量。数值越大，结果覆盖面越广，但响应内容也会更多。">
+                <FieldRow label="top_k" help="融合后候选数量；启用精排时最终返回数量由 rerank top_n 控制。">
                   <Input type="number" min={1} value={topK} onChange={(event) => setTopK(event.target.value)} className="max-w-[180px]" />
                 </FieldRow>
                 <FieldRow label="检索模式" help="vector 适合语义相似问题，bm25 适合关键词匹配，hybrid 会融合两路结果。">
@@ -1001,7 +1001,7 @@ function RunSummary({ result, isRunning }: { result: RagRetrieveResponse | null;
         <div className="space-y-4 px-5 py-5 sm:px-6">
           <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
             <SummaryOverview label="检索模式" code="mode" value={result.metadata.retrieval?.mode ?? "—"} />
-            <SummaryOverview label="结果上限" code="top_k" value={result.metadata.top_k ?? "—"} suffix="个" />
+            <SummaryOverview label={result.metadata.rerank?.enabled ? "候选上限" : "结果上限"} code="top_k" value={result.metadata.top_k ?? "—"} suffix="个" />
             <SummaryOverview label="联查范围" code="kb_count" value={kbCount} suffix="个库" />
             <SummaryOverview label="融合方式" code="fusion" value={retrieval?.fusion ?? "none"} />
             <SummaryOverview

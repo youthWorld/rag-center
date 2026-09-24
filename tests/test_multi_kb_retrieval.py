@@ -145,9 +145,7 @@ def _service(
     embedding = FakeEmbeddingProvider()
     vector_store = FakeVectorStore()
     knowledge_base_repository = FakeKnowledgeBaseRepository(available_ids)
-    log_repository = SimpleNamespace(
-        create=AsyncMock(return_value=SimpleNamespace(id="log-test"))
-    )
+    log_repository = SimpleNamespace(create=AsyncMock(return_value=SimpleNamespace(id="log-test")))
     rate_limit_service = FakeRateLimitService()
     query_pipeline = CountingQueryPipeline()
     service = RagService(
@@ -170,6 +168,46 @@ def _service(
         rate_limit_service,
         query_pipeline,
     )
+
+
+@pytest.mark.asyncio
+async def test_multi_kb_quality_rerank_preserves_sources_and_falls_back() -> None:
+    service, _, _, _, _, _, _ = _service()
+    service.keyword_search_provider = SimpleNamespace(keyword_search=AsyncMock(return_value=[]))
+
+    class CapturingReranker:
+        def __init__(self):
+            self.seen = None
+            self.fail = False
+
+        async def rerank(self, *, query, chunks, top_n):
+            self.seen = list(chunks)
+            if self.fail:
+                raise RuntimeError("confidential")
+            return [{**chunk, "rerank_score": 0.7} for chunk in reversed(chunks)][:top_n]
+
+    reranker = CapturingReranker()
+    service.rerank_provider = reranker
+    request = RagRetrieveRequest(
+        kb_ids=["kb-a", "kb-b"], user_id="multi-quality", query="refund", profile="quality"
+    )
+    result = await service.retrieve(request, tenant_id="tenant-test")
+    assert len(reranker.seen) == 3
+    assert result.metadata["rerank"]["candidate_count"] == 3
+    assert result.metadata["rerank"]["returned_count"] == 3
+    assert result.metadata["rerank"]["top_n"] == 10
+    assert [chunk.chunk_id for chunk in result.retrieved_chunks] == [
+        chunk["chunk_id"] for chunk in reversed(reranker.seen)
+    ]
+    assert {chunk.kb_id for chunk in result.retrieved_chunks} == {"kb-a", "kb-b"}
+    reranker.fail = True
+    fallback = await service.retrieve(request, tenant_id="tenant-test")
+    assert [chunk.chunk_id for chunk in fallback.retrieved_chunks] == [
+        chunk["chunk_id"] for chunk in reranker.seen
+    ]
+    assert all(chunk.rerank_score is None for chunk in fallback.retrieved_chunks)
+    assert fallback.metadata["rerank"]["degraded"] is True
+    assert "confidential" not in fallback.metadata["rerank"]["error"]
 
 
 @pytest.mark.asyncio

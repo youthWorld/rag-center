@@ -58,11 +58,12 @@ class Settings(BaseSettings):
     document_max_size_mb: int = Field(default=20, ge=1)
 
     rerank_enabled: bool = False
-    rerank_provider: str = "llm"
-    rerank_top_n: int = 5
-    rerank_max_candidates: int = 20
-    rerank_chunk_max_chars: int = 1000
-    rerank_temperature: float = 0.0
+    rerank_base_url: str = ""
+    rerank_api_key: str = ""
+    rerank_model: str = "qwen3.7-text-rerank"
+    rerank_timeout_seconds: int = Field(default=15, ge=1)
+    rerank_top_n: int = Field(default=10, ge=1)
+    eval_api_key: str = ""
 
     log_level: str = "INFO"
     log_dir: str = "logs"

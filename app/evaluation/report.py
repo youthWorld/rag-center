@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 from typing import Any
 
@@ -46,7 +47,8 @@ def generate_report(run_dir: Path) -> str:
         f"- run_id：`{manifest['run_id']}`",
         f"- Git commit：`{manifest['git']['commit']}`，dirty={manifest['git']['dirty']}",
         f"- 数据集：`{dataset['version']}`，suite=`{experiment['suite']}`，"
-        f"正式题目数={manifest['case_count']}",
+        f"题目数={manifest['case_count']}，"
+        f"运行类型={_run_type(experiment, manifest)}",
         f"- 知识库：{_format_mapping(manifest['knowledge_bases'])}",
         f"- 语料版本：{_format_mapping(manifest['corpus_versions'])}",
         f"- 并发：业务={manifest['run_config']['concurrency']}，"
@@ -61,6 +63,11 @@ def generate_report(run_dir: Path) -> str:
         "|---|---:|---:|---:|---:|:---:|",
         *_metric_table_rows(comparison),
         "",
+        *(
+            _rerank_diagnostics(experiment, dataset, baseline_rows, candidate_rows)
+            if experiment.get("rerank_experiment") == "effect"
+            else []
+        ),
         "## 分题型结果",
         "",
         *_slice_lines(baseline_metrics, candidate_metrics, field="case_type"),
@@ -105,6 +112,7 @@ def generate_report(run_dir: Path) -> str:
         "",
         "## 原始结果文件位置",
         "",
+        *(["- `shared_candidates.raw.jsonl`"] if experiment.get("rerank_experiment") else []),
         "- `baseline.raw.jsonl`",
         "- `candidate.raw.jsonl`",
         "- `baseline.metrics.json`",
@@ -126,16 +134,90 @@ def write_report(run_dir: Path) -> Path:
     return report_path
 
 
+def _rerank_diagnostics(
+    experiment: dict[str, Any],
+    dataset: dict[str, Any],
+    baseline_rows: list[dict[str, Any]],
+    candidate_rows: list[dict[str, Any]],
+) -> list[str]:
+    del experiment
+    cases = {case["id"]: case for case in dataset["cases"]}
+
+    def score(rows: list[dict[str, Any]]) -> float | None:
+        values: list[float] = []
+        for row in rows:
+            if row.get("error") or row["case_id"] not in cases:
+                return None
+            case = cases[row["case_id"]]
+            docs = [doc.removesuffix(".md").lower() for doc in case.get("expected_documents", [])]
+            headings = [str(h).lower() for h in case.get("expected_headings", [])]
+            if not docs and not headings:
+                return None
+            gains = []
+            for context in row["contexts"][:10]:
+                document = str(context.get("document") or "").removesuffix(".md").lower()
+                heading = str(context.get("heading") or "").lower()
+                relevant = (not docs or any(doc in document for doc in docs)) and (
+                    not headings or any(h in heading for h in headings)
+                )
+                gains.append(int(relevant))
+            dcg = sum(gain / math.log2(rank + 2) for rank, gain in enumerate(gains))
+            ideal_count = min(10, max(len(docs), len(headings), 1))
+            ideal = sum(1 / math.log2(rank + 2) for rank in range(ideal_count))
+            values.append(dcg / ideal)
+        return sum(values) / len(values) if values else None
+
+    left, right = score(baseline_rows), score(candidate_rows)
+    return [
+        "## 排序诊断（非正式验收指标）",
+        "",
+        "nDCG@10 使用 Golden Set 期望文档及章节的二元相关性，"
+        "仅用于定位排序变化，不参与四项正式指标的判定。",
+        f"- baseline nDCG@10：{_format_score(left)}",
+        f"- candidate nDCG@10：{_format_score(right)}",
+        "",
+    ]
+
+
+def _run_type(experiment: dict[str, Any], manifest: dict[str, Any]) -> str:
+    if experiment.get("rerank_experiment") and manifest["case_count"] != 20:
+        return "预检（非正式结论）"
+    return "正式评测"
+
+
 def _conclusion_paragraph(comparison: dict[str, Any], dataset: dict[str, Any]) -> str:
     primary = comparison["primary_metric"]
     delta = comparison["delta"].get(primary)
+    if comparison["verdict"] == "preflight_only":
+        return "少量样本仅验证候选冻结、精排、RAGAS 和报告生成链路；指标不作为正式效果结论。"
     if comparison["verdict"] == "evaluation_failed":
         detail = "；".join(comparison["issues"][:3]) or "关键输入不完整"
         return f"本次运行存在完整性问题（{detail}），已有数值仅供排查，不能形成启用结论。"
-    return (
+    conclusion = (
         f"在 `{dataset['version']}` 的 {comparison['baseline']['case_count']} 道题上，"
         f"主指标 {primary} 变化 {_format_points(delta)}。"
     )
+    if comparison["experiment_id"].startswith("rerank_"):
+        recall_delta = comparison["delta"].get("context_recall")
+        precision_delta = comparison["delta"].get("context_precision")
+        latency_delta = comparison["delta"].get("p95_latency_ms")
+        calls_delta = comparison["delta"].get("average_application_model_calls")
+        if recall_delta is not None and precision_delta is not None:
+            if recall_delta * precision_delta < 0:
+                conclusion += "两项质量指标方向相反，不能宣称质量全面提升；"
+            elif recall_delta >= 0 and precision_delta >= 0:
+                conclusion += "两项质量指标未下降；"
+            else:
+                conclusion += "质量指标存在退化；"
+        conclusion += (
+            f"Context Recall 变化 {_format_points(recall_delta)}，"
+            f"Context Precision 变化 {_format_points(precision_delta)}，"
+            f"P95 变化 {_format_ms_delta(latency_delta)}，"
+            f"平均应用模型调用变化 {_format_signed(calls_delta)} 次。"
+            "本轮仅有 20 题，需结合逐题退化及成本上限决定是否扩大验证，"
+            "不能把历史模型数据当作本模型结论。"
+        )
+    return conclusion
 
 
 def _metric_bullets(comparison: dict[str, Any]) -> list[str]:
@@ -167,22 +249,25 @@ def _metric_table_rows(comparison: dict[str, Any]) -> list[str]:
     delta = comparison["delta"]
     thresholds = comparison["thresholds"]
     checks = comparison["checks"]
-    precision_limit = thresholds["quality_guardrails"]["context_precision"][
-        "min_delta"
-    ]
+    guard_metric = next(iter(thresholds["quality_guardrails"]))
+    guard_limit = thresholds["quality_guardrails"][guard_metric]["min_delta"]
+    primary = comparison["primary_metric"]
+    labels = {"context_recall": "Context Recall", "context_precision": "Context Precision"}
+    quality_rows = []
+    for metric in ("context_recall", "context_precision"):
+        limit = thresholds["min_primary_improvement"] if metric == primary else guard_limit
+        passed = (
+            checks["primary_threshold_passed"]
+            if metric == primary
+            else checks["quality_guardrails"].get(metric, False)
+        )
+        quality_rows.append(
+            f"| {labels[metric]} | {_format_score(baseline[metric])} | "
+            f"{_format_score(candidate[metric])} | {_format_points(delta[metric])} | "
+            f"≥ {_format_points(limit)} | {_yes_no(passed)} |"
+        )
     return [
-        "| Context Recall | "
-        f"{_format_score(baseline['context_recall'])} | "
-        f"{_format_score(candidate['context_recall'])} | "
-        f"{_format_points(delta['context_recall'])} | "
-        f"≥ {_format_points(thresholds['min_primary_improvement'])} | "
-        f"{_yes_no(checks['primary_threshold_passed'])} |",
-        "| Context Precision | "
-        f"{_format_score(baseline['context_precision'])} | "
-        f"{_format_score(candidate['context_precision'])} | "
-        f"{_format_points(delta['context_precision'])} | "
-        f"≥ {_format_points(precision_limit)} | "
-        f"{_yes_no(checks['quality_guardrails'].get('context_precision', False))} |",
+        *quality_rows,
         "| P95 延迟 | "
         f"{_format_ms(baseline['p95_latency_ms'])} | "
         f"{_format_ms(candidate['p95_latency_ms'])} | "
@@ -199,9 +284,7 @@ def _metric_table_rows(comparison: dict[str, Any]) -> list[str]:
     ]
 
 
-def _slice_lines(
-    baseline: dict[str, Any], candidate: dict[str, Any], *, field: str
-) -> list[str]:
+def _slice_lines(baseline: dict[str, Any], candidate: dict[str, Any], *, field: str) -> list[str]:
     left = slice_quality(baseline, field=field)
     right = slice_quality(candidate, field=field)
     values = sorted(set(left) | set(right))
@@ -246,7 +329,7 @@ def _case_change_lines(
     regressions = sorted(changes)[:3]
     lines = ["### 改善最多", ""]
     lines.extend(f"- `{case_id}`：{_format_points(delta)}" for delta, case_id in improvements)
-    lines.extend(["", "### 退化最多", ""] )
+    lines.extend(["", "### 退化最多", ""])
     lines.extend(f"- `{case_id}`：{_format_points(delta)}" for delta, case_id in regressions)
     return lines
 
@@ -267,9 +350,7 @@ def _issue_lines(
     ):
         failed_ids = [case["case_id"] for case in metrics["cases"] if case["retrieve_error"]]
         degraded_ids = [row["case_id"] for row in rows if row.get("degradation")]
-        mismatch_ids = [
-            row["case_id"] for row in rows if row.get("effective_config_mismatches")
-        ]
+        mismatch_ids = [row["case_id"] for row in rows if row.get("effective_config_mismatches")]
         if failed_ids:
             lines.append(f"- {group_name} 请求失败：{', '.join(failed_ids)}")
         if degraded_ids:

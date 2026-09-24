@@ -1,9 +1,14 @@
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+import httpx
 import pytest
 
+from app.api.dependencies import get_rag_service
+from app.api.v1.deps import get_current_tenant
+from app.core.auth import TenantContext
 from app.core.config import Settings
+from app.main import app
 from app.providers.embedding.base import EmbeddingProvider
 from app.providers.keyword_search.base import KeywordSearchProvider
 from app.providers.vectorstores.base import VectorStore
@@ -45,11 +50,11 @@ def test_hybrid_search_fuses_by_chunk_id_with_rrf() -> None:
         "score": pytest.approx(1 / 62 + 1 / 61),
         "vector_score": 0.70,
         "bm25_score": 12.4,
-            "vector_rank": 2,
-            "bm25_rank": 1,
-            "retrieval_source": "hybrid",
-            "metadata": {"heading_path": "退款"},
-        }
+        "vector_rank": 2,
+        "bm25_rank": 1,
+        "retrieval_source": "hybrid",
+        "metadata": {"heading_path": "退款"},
+    }
     assert result[1]["retrieval_source"] == "vector"
     assert result[2]["retrieval_source"] == "bm25"
 
@@ -146,6 +151,112 @@ def _rag_service(
         vector_store=FakeVectorStore(),
         keyword_search_provider=keyword_search_provider,
     )
+
+
+@pytest.mark.asyncio
+async def test_quality_reranks_rrf_top20_before_returning_top10() -> None:
+    service = _rag_service(keyword_search_provider=FakeKeywordSearchProvider())
+    service.vector_store.chunks = [_chunk(f"chunk-{i}", score=1 / (i + 1)) for i in range(25)]
+
+    class CapturingReranker:
+        def __init__(self):
+            self.calls = []
+
+        async def rerank(self, *, query, chunks, top_n):
+            self.calls.append((query, list(chunks), top_n))
+            return [{**chunk, "rerank_score": 0.5} for chunk in reversed(chunks)][:top_n]
+
+    reranker = CapturingReranker()
+    service.rerank_provider = reranker
+    response = await service.retrieve(
+        RagRetrieveRequest(kb_id="kb-test", user_id="user-test", query="refund", profile="quality"),
+        tenant_id="tenant-test",
+    )
+    assert service.vector_store.calls[0]["top_k"] == 20
+    assert len(reranker.calls[0][1]) == 20
+    assert reranker.calls[0][2] == 10
+    assert len(response.retrieved_chunks) == 10
+    assert response.metadata["rerank"]["candidate_count"] == 20
+    assert response.metadata["rerank"]["returned_count"] == 10
+    assert response.metadata["rerank"]["top_n"] == 10
+    assert all(chunk.rerank_score == 0.5 for chunk in response.retrieved_chunks)
+
+    async def failed(**kwargs):
+        raise RuntimeError("secret-content")
+
+    reranker.rerank = failed
+    fallback = await service.retrieve(
+        RagRetrieveRequest(kb_id="kb-test", user_id="user-test", query="refund", profile="quality"),
+        tenant_id="tenant-test",
+    )
+    assert len(fallback.retrieved_chunks) == 10
+    assert [chunk.chunk_id for chunk in fallback.retrieved_chunks] == [
+        chunk["chunk_id"] for chunk in reranker.calls[0][1][:10]
+    ]
+    assert all(chunk.rerank_score is None for chunk in fallback.retrieved_chunks)
+    assert fallback.metadata["rerank"]["degraded"] is True
+    assert "secret-content" not in fallback.metadata["rerank"]["error"]
+
+
+@pytest.mark.asyncio
+async def test_http_quality_and_custom_explicit_disable_use_same_contract() -> None:
+    service = _rag_service(keyword_search_provider=FakeKeywordSearchProvider())
+    service.vector_store.chunks = [_chunk(f"chunk-{i}", score=1 / (i + 1)) for i in range(25)]
+    seen = []
+
+    class Provider:
+        async def rerank(self, *, query, chunks, top_n):
+            seen.append((len(chunks), top_n))
+            return [{**chunk, "rerank_score": 0.8} for chunk in chunks[:top_n]]
+
+    service.rerank_provider = Provider()
+    app.dependency_overrides[get_rag_service] = lambda: service
+    app.dependency_overrides[get_current_tenant] = lambda: TenantContext(
+        tenant_id="tenant-test",
+        tenant_name="Test",
+        key_id=None,
+        key_prefix=None,
+        plan="pro",
+    )
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            quality = await client.post(
+                "/api/v1/rag/retrieve",
+                json={
+                    "kb_id": "kb-test",
+                    "user_id": "integration-quality",
+                    "query": "refund",
+                    "profile": "quality",
+                    "top_k": 1,
+                    "rerank_options": {"enabled": False},
+                },
+            )
+            custom = await client.post(
+                "/api/v1/rag/retrieve",
+                json={
+                    "kb_id": "kb-test",
+                    "user_id": "integration-custom",
+                    "query": "refund",
+                    "profile": "custom",
+                    "top_k": 3,
+                    "retrieval_options": {"mode": "hybrid"},
+                    "rerank_options": {"enabled": False},
+                    "query_options": {"enabled": False, "synonym_enabled": False},
+                },
+            )
+    finally:
+        app.dependency_overrides.pop(get_rag_service, None)
+        app.dependency_overrides.pop(get_current_tenant, None)
+    assert quality.status_code == custom.status_code == 200
+    qdata, cdata = quality.json()["data"], custom.json()["data"]
+    assert seen == [(20, 10)]
+    assert qdata["metadata"]["rerank"]["model"] == "qwen3.7-text-rerank"
+    assert len(qdata["retrieved_chunks"]) == 10
+    assert qdata["metadata"]["rerank"]["candidate_count"] == 20
+    assert len(cdata["retrieved_chunks"]) == 3
+    assert cdata["metadata"]["rerank"]["enabled"] is False
 
 
 @pytest.mark.asyncio

@@ -83,9 +83,7 @@ def _service(
     settings = Settings(
         top_k=2,
         rerank_enabled=enabled,
-        rerank_provider="llm",
         rerank_top_n=1,
-        rerank_max_candidates=max_candidates,
         llm_provider="openai_compatible",
         llm_model="test-model",
     )
@@ -121,14 +119,11 @@ async def test_rag_service_returns_reranked_chunks_and_metadata() -> None:
     assert [chunk.chunk_id for chunk in response.retrieved_chunks] == ["chunk-2"]
     assert response.retrieved_chunks[0].score == 0.8
     assert response.retrieved_chunks[0].rerank_score == 0.95
-    assert response.metadata["rerank"] == {
-        "enabled": True,
-        "provider": "llm",
-        "llm_provider": "openai_compatible",
-        "model": "test-model",
-        "top_n": 1,
-        "candidate_count": 2,
-    }
+    assert response.metadata["rerank"]["provider"] == "qwen3.7"
+    assert response.metadata["rerank"]["model"] == "qwen3.7-text-rerank"
+    assert response.metadata["rerank"]["candidate_count"] == 2
+    assert response.metadata["rerank"]["returned_count"] == 1
+    assert response.metadata["rerank"]["degraded"] is False
     assert log_repository.create.await_args.kwargs["retrieved_chunks"][0]["rerank_score"] == 0.95
 
 
@@ -146,11 +141,11 @@ async def test_rag_service_degrades_to_vector_order_when_rerank_fails() -> None:
         tenant_id="tenant-test",
     )
 
-    assert [chunk.chunk_id for chunk in response.retrieved_chunks] == ["chunk-1", "chunk-2"]
+    assert [chunk.chunk_id for chunk in response.retrieved_chunks] == ["chunk-1"]
     assert all(chunk.rerank_score is None for chunk in response.retrieved_chunks)
     assert response.metadata["rerank"]["enabled"] is True
     assert response.metadata["rerank"]["degraded"] is True
-    assert response.metadata["rerank"]["error"] == "invalid JSON"
+    assert response.metadata["rerank"]["error"] == "rerank failed (RuntimeError)"
 
 
 @pytest.mark.asyncio
@@ -175,7 +170,7 @@ async def test_request_can_disable_globally_enabled_rerank() -> None:
 
 
 @pytest.mark.asyncio
-async def test_rag_service_limits_candidates_before_provider() -> None:
+async def test_rag_service_custom_uses_explicit_candidate_count() -> None:
     rerank_provider = FakeRerankProvider()
     service, _ = _service(rerank_provider, max_candidates=1)
 
@@ -191,5 +186,8 @@ async def test_rag_service_limits_candidates_before_provider() -> None:
     )
 
     assert len(rerank_provider.calls) == 1
-    assert [chunk["chunk_id"] for chunk in rerank_provider.calls[0]["chunks"]] == ["chunk-1"]
-    assert response.metadata["rerank"]["candidate_count"] == 1
+    assert [chunk["chunk_id"] for chunk in rerank_provider.calls[0]["chunks"]] == [
+        "chunk-1",
+        "chunk-2",
+    ]
+    assert response.metadata["rerank"]["candidate_count"] == 2
