@@ -697,7 +697,7 @@ function EvidencePackPanel({ result, isRunning, requested }: { result: RagRetrie
         ) : !result ? (
           <p className="text-sm text-muted">启用 Evidence 并执行检索后显示。</p>
         ) : metadata?.degraded ? (
-          <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">证据编排已降级：{metadata.error ?? "未知错误"}。原始检索结果不受影响。</div>
+          <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">证据编排已降级：{formatEvidenceError(metadata.error_code, metadata.error)}。原始检索结果不受影响。</div>
         ) : !pack ? (
           <p className="text-sm text-muted">{metadata ? (metadata.enabled ? "本次未生成证据包。" : "本次未启用证据编排。") : "该响应未包含 Evidence 字段，已按旧响应兼容。"}</p>
         ) : (
@@ -747,6 +747,22 @@ function EvidencePackPanel({ result, isRunning, requested }: { result: RagRetrie
       </div>
     </Card>
   );
+}
+
+function formatEvidenceError(errorCode?: string | null, fallback?: string | null) {
+  const labels: Record<string, string> = {
+    LLM_TIMEOUT: "Evidence 模型调用超时",
+    LLM_RATE_LIMIT: "Evidence 模型请求过于频繁",
+    LLM_TOKEN_LIMIT: "Evidence 候选内容超过模型上下文限制",
+    LLM_CONTENT_VIOLATION: "Evidence 内容被模型安全策略拒绝",
+    LLM_MODEL_ERROR: "Evidence 模型暂不可用",
+    LLM_NO_RESPONSE: "Evidence 模型未返回有效结果",
+    LLM_ERROR: "Evidence 模型调用失败",
+    CONFIGURATION_ERROR: "Evidence 模型配置不可用",
+    EVIDENCE_VALIDATION_ERROR: "Evidence 结果校验失败",
+    EVIDENCE_ORCHESTRATION_ERROR: "Evidence 编排内部错误",
+  };
+  return (errorCode && labels[errorCode]) || fallback || "未知错误";
 }
 
 function RetrievalLoadingState() {

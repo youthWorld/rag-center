@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import asyncio
 import time
 from dataclasses import dataclass
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.error_codes import ErrorCode
+from app.core.exceptions import LLMServiceError, ServiceConfigurationError
 from app.core.logging import get_logger
-from app.providers.llm.base import LLMProvider
+from app.providers.llm.base import LLMProvider, LLMProviderError
 from app.repositories.chunk_repository import ChunkRepository
 from app.schemas.rag import (
     EvidenceGroup,
@@ -131,11 +134,16 @@ class EvidenceOrchestrationService:
                 len(pool),
                 candidate_chars,
             )
-            llm_result = await self.llm_provider.chat_json_with_metadata(
-                system_prompt=EVIDENCE_ORCHESTRATION_PROMPT,
-                user_payload=payload,
-                temperature=0.0,
-                timeout_seconds=self.timeout_seconds,
+            llm_result = await asyncio.wait_for(
+                self.llm_provider.chat_json_with_metadata(
+                    system_prompt=EVIDENCE_ORCHESTRATION_PROMPT,
+                    user_payload=payload,
+                    temperature=0.0,
+                    timeout_seconds=self.timeout_seconds,
+                    max_tokens=2048,
+                    enable_thinking=False,
+                ),
+                timeout=self.timeout_seconds,
             )
             metadata.model_call = llm_result.metadata.to_dict()
             aspects, selected_indexes = self._validate_output(
@@ -169,13 +177,15 @@ class EvidenceOrchestrationService:
             return EvidenceOrchestrationResult(pack=pack, metadata=metadata)
         except Exception as exc:
             metadata.degraded = True
-            metadata.error = self._safe_error(exc)
+            metadata.error_code, metadata.error = self._safe_error(exc)
             self.logger.warning(
                 "BUSINESS_EVENT | event=evidence_orchestration_degraded | "
-                "tenant_id=%s | kb_count=%s | candidate_count=%s | error=%s",
+                "tenant_id=%s | kb_count=%s | candidate_count=%s | "
+                "error_code=%s | error=%s",
                 tenant_id,
                 len(kb_ids),
                 metadata.candidate_count,
+                metadata.error_code,
                 metadata.error,
             )
             return EvidenceOrchestrationResult(pack=None, metadata=metadata)
@@ -508,7 +518,19 @@ class EvidenceOrchestrationService:
         )
 
     @staticmethod
-    def _safe_error(exception: Exception) -> str:
+    def _safe_error(exception: Exception) -> tuple[str, str]:
         if isinstance(exception, EvidenceValidationError):
-            return str(exception)
-        return f"evidence orchestration failed ({type(exception).__name__})"
+            return "EVIDENCE_VALIDATION_ERROR", str(exception)
+        if isinstance(exception, TimeoutError):
+            return ErrorCode.LLM_TIMEOUT.name, ErrorCode.LLM_TIMEOUT.message
+        if isinstance(exception, LLMServiceError):
+            error_code = exception.error_code or ErrorCode.LLM_ERROR
+            return error_code.name, error_code.message
+        if isinstance(exception, LLMProviderError):
+            return ErrorCode.LLM_NO_RESPONSE.name, ErrorCode.LLM_NO_RESPONSE.message
+        if isinstance(exception, ServiceConfigurationError):
+            return ErrorCode.CONFIGURATION_ERROR.name, ErrorCode.CONFIGURATION_ERROR.message
+        return (
+            "EVIDENCE_ORCHESTRATION_ERROR",
+            f"evidence orchestration failed ({type(exception).__name__})",
+        )

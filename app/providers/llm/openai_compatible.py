@@ -86,6 +86,7 @@ class OpenAICompatibleLLMProvider(LLMProvider):
         temperature: float = 0.0,
         timeout_seconds: float | None = None,
         max_tokens: int | None = None,
+        enable_thinking: bool | None = None,
     ) -> dict[str, Any]:
         result = await self.chat_json_with_metadata(
             system_prompt=system_prompt,
@@ -93,6 +94,7 @@ class OpenAICompatibleLLMProvider(LLMProvider):
             temperature=temperature,
             timeout_seconds=timeout_seconds,
             max_tokens=max_tokens,
+            enable_thinking=enable_thinking,
         )
         return result.output
 
@@ -104,6 +106,7 @@ class OpenAICompatibleLLMProvider(LLMProvider):
         temperature: float = 0.0,
         timeout_seconds: float | None = None,
         max_tokens: int | None = None,
+        enable_thinking: bool | None = None,
     ) -> LLMJSONResponse:
         request_kwargs: dict[str, Any] = {
             "model": self.settings.llm_model,
@@ -121,6 +124,8 @@ class OpenAICompatibleLLMProvider(LLMProvider):
             request_kwargs["max_tokens"] = max_tokens
         if timeout_seconds is not None:
             request_kwargs["timeout"] = timeout_seconds
+        if enable_thinking is not None and self._supports_enable_thinking():
+            request_kwargs["extra_body"] = {"enable_thinking": enable_thinking}
 
         started = time.perf_counter()
         response = await self._chat_completion(
@@ -155,6 +160,13 @@ class OpenAICompatibleLLMProvider(LLMProvider):
                 ),
                 total_tokens=self._usage_value(response, "total_tokens"),
             ),
+        )
+
+    def _supports_enable_thinking(self) -> bool:
+        model = self.settings.llm_model.lower()
+        base_url = self.settings.llm_base_url.lower()
+        return "dashscope.aliyuncs.com" in base_url and model.startswith(
+            ("qwen3", "qwen-plus", "qwen-flash")
         )
 
     @staticmethod

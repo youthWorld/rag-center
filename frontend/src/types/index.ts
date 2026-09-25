@@ -185,6 +185,7 @@ export type EvidenceMetadata = {
   status?: EvidenceStatus | null;
   latency_ms?: number;
   degraded?: boolean;
+  error_code?: string | null;
   error?: string | null;
   model_call?: {
     provider?: string | null;

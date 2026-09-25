@@ -36,7 +36,7 @@ class Settings(BaseSettings):
     query_rewrite_timeout_ms: int = 2000
     query_max_length: int = Field(default=2000, ge=1)
     evidence_enabled: bool = False
-    evidence_timeout_seconds: int = Field(default=15, ge=1)
+    evidence_timeout_seconds: int = Field(default=30, ge=1)
 
     vector_store: str = "pgvector"
     keyword_search_provider: str = "elasticsearch"

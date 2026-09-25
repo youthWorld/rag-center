@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -6,7 +7,7 @@ import pytest
 
 from app.core.config import Settings
 from app.core.error_codes import ErrorCode
-from app.core.exceptions import AppError
+from app.core.exceptions import AppError, LLMServiceError
 from app.providers.embedding.base import EmbeddingProvider
 from app.providers.llm.base import LLMCallMetadata, LLMJSONResponse, LLMProvider
 from app.providers.vectorstores.base import VectorStore
@@ -55,11 +56,18 @@ def _chunk(candidate: dict, *, content: str | None = None):
 
 
 class FakeLLMProvider(LLMProvider):
-    def __init__(self, output: dict | None = None, *, fail: bool = False) -> None:
+    def __init__(
+        self,
+        output: dict | None = None,
+        *,
+        fail: bool = False,
+        exception: Exception | None = None,
+    ) -> None:
         self.output = output or {
             "aspects": [{"aspect": "refund", "evidence": [{"index": 0, "role": "core"}]}]
         }
         self.fail = fail
+        self.exception = exception
         self.calls: list[dict] = []
 
     async def chat_json(self, **kwargs) -> dict:
@@ -67,6 +75,8 @@ class FakeLLMProvider(LLMProvider):
 
     async def chat_json_with_metadata(self, **kwargs) -> LLMJSONResponse:
         self.calls.append(kwargs)
+        if self.exception is not None:
+            raise self.exception
         if self.fail:
             raise RuntimeError("secret original body")
         return LLMJSONResponse(
@@ -247,6 +257,8 @@ async def test_orchestrate_uses_database_content_and_allows_shared_item() -> Non
         }
     ]
     assert result.metadata.model_call["total_tokens"] == 16
+    assert llm.calls[0]["enable_thinking"] is False
+    assert llm.calls[0]["max_tokens"] == 2048
 
 
 @pytest.mark.asyncio
@@ -267,6 +279,7 @@ async def test_orchestrate_rejects_missing_or_wrong_scope_and_degrades() -> None
 
     assert result.pack is None
     assert result.metadata.degraded is True
+    assert result.metadata.error_code == "EVIDENCE_VALIDATION_ERROR"
     assert result.metadata.error == "selected chunks failed scope validation"
 
 
@@ -293,6 +306,7 @@ async def test_invalid_llm_output_and_failure_do_not_leak_content(caplog) -> Non
     assert body not in caplog.text
     assert "VERY_PRIVATE_QUESTION" not in caplog.text
     assert "secret original body" not in result.metadata.error
+    assert result.metadata.error_code == "EVIDENCE_ORCHESTRATION_ERROR"
 
     with pytest.raises(EvidenceValidationError):
         EvidenceOrchestrationService._validate_output(
@@ -300,6 +314,70 @@ async def test_invalid_llm_output_and_failure_do_not_leak_content(caplog) -> Non
             candidate_count=1,
             max_items=8,
         )
+
+
+@pytest.mark.asyncio
+async def test_llm_failure_uses_safe_structured_diagnostic() -> None:
+    candidate = _candidate("selected")
+    llm = FakeLLMProvider(
+        exception=LLMServiceError(
+            code=ErrorCode.LLM_TIMEOUT,
+            internal_message="secret upstream timeout body",
+        )
+    )
+    service, _ = _service(llm, [_chunk(candidate)])
+
+    result = await service.orchestrate(
+        query="question",
+        tenant_id="tenant-test",
+        kb_ids=["kb-a"],
+        index_versions={"kb-a": "v2"},
+        candidates=[candidate],
+        retrieved_chunks=[candidate],
+        options=EvidenceOptions(enabled=True),
+    )
+
+    assert result.pack is None
+    assert result.metadata.degraded is True
+    assert result.metadata.error_code == "LLM_TIMEOUT"
+    assert result.metadata.error == ErrorCode.LLM_TIMEOUT.message
+    assert "secret upstream timeout body" not in result.metadata.model_dump_json()
+
+
+def test_evidence_timeout_default_is_thirty_seconds() -> None:
+    assert Settings.model_fields["evidence_timeout_seconds"].default == 30
+
+
+@pytest.mark.asyncio
+async def test_evidence_timeout_is_an_overall_deadline() -> None:
+    class SlowLLMProvider(FakeLLMProvider):
+        async def chat_json_with_metadata(self, **kwargs) -> LLMJSONResponse:
+            await asyncio.sleep(1)
+            return await super().chat_json_with_metadata(**kwargs)
+
+    candidate = _candidate("selected")
+    service = EvidenceOrchestrationService(
+        SimpleNamespace(),
+        SlowLLMProvider(),
+        timeout_seconds=0.01,
+        chunk_repository=FakeChunkRepository([_chunk(candidate)]),
+    )
+
+    result = await service.orchestrate(
+        query="question",
+        tenant_id="tenant-test",
+        kb_ids=["kb-a"],
+        index_versions={"kb-a": "v2"},
+        candidates=[candidate],
+        retrieved_chunks=[candidate],
+        options=EvidenceOptions(enabled=True),
+    )
+
+    assert result.pack is None
+    assert result.metadata.degraded is True
+    assert result.metadata.error_code == "LLM_TIMEOUT"
+    assert result.metadata.error == ErrorCode.LLM_TIMEOUT.message
+    assert result.metadata.latency_ms < 500
 
 
 def test_evidence_request_priority_and_plan_restriction() -> None:
@@ -446,4 +524,8 @@ async def test_rag_service_returns_original_results_when_evidence_fails() -> Non
     assert [item.chunk_id for item in response.retrieved_chunks] == ["top-1", "top-2"]
     assert response.evidence_pack is None
     assert response.metadata["evidence"]["degraded"] is True
+    assert (
+        response.metadata["evidence"]["error_code"]
+        == "EVIDENCE_ORCHESTRATION_ERROR"
+    )
     assert response.metadata["application_model_call_details"]["evidence"] == 1

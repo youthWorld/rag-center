@@ -154,6 +154,60 @@ async def test_openai_compatible_llm_provider_returns_portable_metadata() -> Non
 
 
 @pytest.mark.asyncio
+async def test_openai_compatible_llm_provider_disables_qwen_thinking() -> None:
+    provider = OpenAICompatibleLLMProvider(
+        Settings(
+            llm_api_key="test-key",
+            llm_base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+            llm_model="qwen3.7-flash",
+        )
+    )
+    create = AsyncMock(
+        return_value=SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="{}"))]
+        )
+    )
+    provider._client = SimpleNamespace(
+        chat=SimpleNamespace(completions=SimpleNamespace(create=create))
+    )
+
+    await provider.chat_json_with_metadata(
+        system_prompt="system",
+        user_payload={},
+        enable_thinking=False,
+    )
+
+    assert create.await_args.kwargs["extra_body"] == {"enable_thinking": False}
+
+
+@pytest.mark.asyncio
+async def test_openai_compatible_llm_provider_omits_qwen_option_for_other_endpoints() -> None:
+    provider = OpenAICompatibleLLMProvider(
+        Settings(
+            llm_api_key="test-key",
+            llm_base_url="https://api.deepseek.com/v1",
+            llm_model="deepseek-chat",
+        )
+    )
+    create = AsyncMock(
+        return_value=SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="{}"))]
+        )
+    )
+    provider._client = SimpleNamespace(
+        chat=SimpleNamespace(completions=SimpleNamespace(create=create))
+    )
+
+    await provider.chat_json_with_metadata(
+        system_prompt="system",
+        user_payload={},
+        enable_thinking=False,
+    )
+
+    assert "extra_body" not in create.await_args.kwargs
+
+
+@pytest.mark.asyncio
 async def test_openai_compatible_llm_provider_allows_missing_metadata_fields() -> None:
     provider = OpenAICompatibleLLMProvider(Settings(llm_api_key="test-key"))
     provider._client = SimpleNamespace(

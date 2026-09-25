@@ -39,6 +39,7 @@ class LLMProvider(ABC):
         temperature: float = 0.0,
         timeout_seconds: float | None = None,
         max_tokens: int | None = None,
+        enable_thinking: bool | None = None,
     ) -> dict[str, Any]:
         """Call a chat model and return its parsed JSON object response."""
 
@@ -50,16 +51,20 @@ class LLMProvider(ABC):
         temperature: float = 0.0,
         timeout_seconds: float | None = None,
         max_tokens: int | None = None,
+        enable_thinking: bool | None = None,
     ) -> LLMJSONResponse:
         """Return JSON plus portable call metadata for providers that support it."""
 
-        output = await self.chat_json(
-            system_prompt=system_prompt,
-            user_payload=user_payload,
-            temperature=temperature,
-            timeout_seconds=timeout_seconds,
-            max_tokens=max_tokens,
-        )
+        chat_kwargs: dict[str, Any] = {
+            "system_prompt": system_prompt,
+            "user_payload": user_payload,
+            "temperature": temperature,
+            "timeout_seconds": timeout_seconds,
+            "max_tokens": max_tokens,
+        }
+        if enable_thinking is not None:
+            chat_kwargs["enable_thinking"] = enable_thinking
+        output = await self.chat_json(**chat_kwargs)
         return LLMJSONResponse(output=output, metadata=LLMCallMetadata())
 
     async def chat_text(
