@@ -442,26 +442,9 @@ class EvaluationRunner:
 
 def normalize_contexts(chunks: list[Any], *, index_version: str | None) -> list[dict[str, Any]]:
     seen: set[str] = set()
-    seen_supplemental: set[str] = set()
     result: list[dict[str, Any]] = []
     for chunk in chunks:
         context = normalize_context(chunk, rank=len(result) + 1, index_version=index_version)
-        if index_version == "v2" and isinstance(chunk, Mapping):
-            raw_context = chunk.get("context")
-            if isinstance(raw_context, Mapping):
-                anchor_content = str(chunk.get("content") or "")
-                sources = raw_context.get("sources")
-                if isinstance(sources, list):
-                    parts = [anchor_content] if anchor_content else []
-                    for source in sources:
-                        if not isinstance(source, Mapping) or source.get("relation") == "anchor":
-                            continue
-                        source_content = str(source.get("content") or "").strip()
-                        if source_content and source_content not in seen_supplemental:
-                            seen_supplemental.add(source_content)
-                            parts.append(source_content)
-                    if parts:
-                        context["content"] = "\n\n".join(parts)
         content = context["content"].strip()
         if content and content not in seen:
             seen.add(content)

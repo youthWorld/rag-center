@@ -48,16 +48,28 @@ async def test_active_version_cannot_delete_and_failed_cannot_activate() -> None
     assert kb.active_index_version == "v1"
 
 
-def test_unified_experiment_is_versioned_and_ragas_uses_final_evidence() -> None:
+def test_unified_experiment_uses_business_assembled_context() -> None:
     experiment = load_and_validate_experiment(Path("eval/experiments/context_graph_upgrade.json"))
     assert experiment["changed_fields"] == ["index_version"]
     assert experiment["baseline"]["index_version"] == "v1"
     chunks = [
-        {"chunk_id": "a", "content": "原文", "context": {"content": "原文\n\n补充"}},
+        {
+            "chunk_id": "a",
+            "content": "原文",
+            "context": {
+                "content": "文档：示例\n章节：一、流程\n\n父章节\n\n原文\n\n引用内容：\n补充",
+                "sources": [
+                    {"relation": "anchor", "content": "原文"},
+                    {"relation": "reference", "content": "不应由 Runner 重新拼接"},
+                ],
+            },
+        },
         {"chunk_id": "b", "content": "补充", "context": {"content": "补充"}},
     ]
     assert normalize_contexts(chunks, index_version="v1")[0]["content"] == "原文"
-    assert normalize_contexts(chunks, index_version="v2")[0]["content"] == "原文\n\n补充"
+    assert normalize_contexts(chunks, index_version="v2")[0]["content"] == (
+        "文档：示例\n章节：一、流程\n\n父章节\n\n原文\n\n引用内容：\n补充"
+    )
 
 
 def test_runner_rejects_mixed_version() -> None:
