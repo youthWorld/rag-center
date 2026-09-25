@@ -16,6 +16,7 @@ GROUP_REQUEST_FIELDS = {
     "retrieval_options",
     "rerank_options",
     "query_options",
+    "evidence_options",
     "index_version",
 }
 
@@ -98,7 +99,54 @@ def validate_experiment(payload: dict[str, Any]) -> None:
         except ExperimentValidationError as exc:
             errors.extend(f"root.{group_name}: {error}" for error in exc.errors)
 
-    if rerank_experiment and len(expanded_groups) == 2:
+    evidence_experiment = payload.get("target") == "evidence_orchestration"
+    if evidence_experiment and len(expanded_groups) == 2:
+        if payload.get("shared_candidate_top_k") != 20:
+            errors.append("Evidence experiments require shared_candidate_top_k=20")
+        for group_name in GROUP_NAMES:
+            config = expanded_groups[group_name]
+            retrieval = config.get("retrieval_options", {})
+            query = config.get("query_options", {})
+            rerank = config.get("rerank_options", {})
+            evidence = config.get("evidence_options", {})
+            if (
+                config.get("profile") != "custom"
+                or config.get("top_k") != 10
+                or config.get("index_version") != "v2"
+                or retrieval.get("mode") != "hybrid"
+                or retrieval.get("vector_top_k") != 20
+                or retrieval.get("bm25_top_k") != 20
+                or not rerank.get("enabled")
+                or rerank.get("top_n") != 10
+                or query.get("enabled") is not False
+                or query.get("strategy") != "noop"
+                or query.get("synonym_enabled") is not False
+                or evidence.get("enabled") is not (group_name == "candidate")
+                or evidence.get("max_items") is None
+            ):
+                errors.append(f"{group_name} does not match the fixed Evidence pipeline")
+        if expanded_groups["baseline"].get("evidence_options", {}).get("max_items") != (
+            expanded_groups["candidate"].get("evidence_options", {}).get("max_items")
+        ):
+            errors.append("Evidence groups must use the same evidence_options.max_items")
+        baseline_as_candidate = {
+            **expanded_groups["baseline"],
+            "evidence_options": {
+                **expanded_groups["baseline"].get("evidence_options", {}),
+                "enabled": True,
+            },
+        }
+        if baseline_as_candidate != expanded_groups["candidate"]:
+            errors.append("Evidence groups may differ only by evidence_options.enabled")
+        if changed_fields != ["evidence_options.enabled"]:
+            errors.append("Evidence experiment changed_fields must be ['evidence_options.enabled']")
+        if (
+            payload.get("warmup_cases") != 0
+            or payload.get("concurrency") != 4
+            or payload.get("ragas_concurrency") != 4
+        ):
+            errors.append("Evidence experiments require no warm-up and concurrency 4/4")
+    elif rerank_experiment and len(expanded_groups) == 2:
         expected_rerankers = (
             {"baseline": "none", "candidate": "qwen37"}
             if rerank_experiment == "effect"
@@ -199,6 +247,7 @@ def expected_effective_config(group: dict[str, Any]) -> dict[str, Any]:
     retrieval = expanded["retrieval_options"]
     rerank = expanded["rerank_options"]
     query = expanded["query_options"]
+    evidence = expanded.get("evidence_options") or {}
     mode = retrieval["mode"]
     rewrite_enabled = query.get("strategy") != "noop" and bool(query.get("enabled"))
     return {
@@ -212,6 +261,11 @@ def expected_effective_config(group: dict[str, Any]) -> dict[str, Any]:
         "rerank_top_n": rerank.get("top_n"),
         "rewrite_enabled": rewrite_enabled,
         "synonym_enabled": query.get("synonym_enabled", True),
+        **(
+            {"evidence_enabled": bool(evidence.get("enabled"))}
+            if "evidence_options" in expanded
+            else {}
+        ),
         **({"index_version": expanded["index_version"]} if "index_version" in expanded else {}),
     }
 
@@ -270,6 +324,20 @@ def _validate_expanded_group(group: dict[str, Any], errors: list[str]) -> None:
             errors.append("query_options.strategy must be noop or rewrite")
         if "synonym_enabled" in query and not isinstance(query["synonym_enabled"], bool):
             errors.append("query_options.synonym_enabled must be a boolean")
+
+    evidence = group.get("evidence_options")
+    if evidence is not None:
+        if not isinstance(evidence, dict) or not isinstance(evidence.get("enabled"), bool):
+            errors.append("evidence_options.enabled must be a boolean")
+        elif "max_items" in evidence:
+            max_items = evidence["max_items"]
+            if (
+                not isinstance(max_items, int)
+                or isinstance(max_items, bool)
+                or max_items < 1
+                or max_items > 20
+            ):
+                errors.append("evidence_options.max_items must be an integer from 1 to 20")
 
 
 def _validate_decision(value: Any, errors: list[str]) -> None:

@@ -6,6 +6,7 @@ class AuthMeFeatures(BaseModel):
     hybrid_allowed: bool
     rerank_allowed: bool
     query_rewrite_allowed: bool
+    evidence_allowed: bool
 
 
 class AuthMeLimits(BaseModel):

@@ -3,6 +3,7 @@ import type {
   FeedbackData,
   FeedbackRequest,
   RagRetrieveResponse,
+  EvidenceOptions,
   QueryOptions,
   RetrieveProfile,
   RetrievalOptions,
@@ -19,6 +20,7 @@ export type RetrievePayload = {
   retrieval_options?: RetrievalOptions;
   rerank_options?: RerankOptions;
   query_options?: QueryOptions;
+  evidence_options?: EvidenceOptions;
   index_version?: string;
 };
 

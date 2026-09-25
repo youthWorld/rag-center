@@ -1,7 +1,7 @@
 from collections.abc import Sequence
 from typing import Any
 
-from sqlalchemy import delete, select
+from sqlalchemy import and_, delete, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.chunk import Chunk
@@ -69,3 +69,29 @@ class ChunkRepository:
             statement = statement.where(Chunk.index_version == index_version)
         await self.session.execute(statement)
         await self.session.flush()
+
+    async def get_by_scopes(
+        self,
+        *,
+        tenant_id: str,
+        scopes: dict[tuple[str, str], set[str]],
+    ) -> list[Chunk]:
+        """Load exact chunks inside tenant, knowledge-base, and version boundaries."""
+
+        predicates = [
+            and_(
+                Chunk.kb_id == kb_id,
+                Chunk.index_version == index_version,
+                Chunk.id.in_(sorted(chunk_ids)),
+            )
+            for (kb_id, index_version), chunk_ids in scopes.items()
+            if chunk_ids
+        ]
+        if not predicates:
+            return []
+        statement = select(Chunk).where(
+            Chunk.tenant_id == tenant_id,
+            or_(*predicates),
+        )
+        result = await self.session.execute(statement)
+        return list(result.scalars().all())

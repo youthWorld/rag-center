@@ -191,6 +191,7 @@ async def test_auth_me_returns_tenant_context_for_valid_key(monkeypatch) -> None
                 "hybrid_allowed": False,
                 "rerank_allowed": False,
                 "query_rewrite_allowed": False,
+                "evidence_allowed": False,
             },
             "limits": {
                 "retrieve_qps": 3,
@@ -227,6 +228,7 @@ async def test_auth_me_uses_default_tenant_when_auth_is_disabled() -> None:
             "hybrid_allowed": True,
             "rerank_allowed": True,
             "query_rewrite_allowed": True,
+            "evidence_allowed": True,
         },
         "limits": {
             "retrieve_qps": 50,

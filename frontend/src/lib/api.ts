@@ -72,3 +72,13 @@ export function getApiErrorCode(error: unknown): number | null {
   }
   return null;
 }
+
+export function getApiErrorData(error: unknown): Record<string, unknown> | null {
+  if (axios.isAxiosError(error)) {
+    const envelope = error.response?.data as { data?: unknown } | undefined;
+    return envelope?.data && typeof envelope.data === "object"
+      ? envelope.data as Record<string, unknown>
+      : null;
+  }
+  return null;
+}

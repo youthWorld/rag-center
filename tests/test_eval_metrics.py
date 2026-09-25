@@ -17,6 +17,7 @@ from app.evaluation.storage import write_json, write_jsonl
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 EXPERIMENT_PATH = PROJECT_ROOT / "eval" / "experiments" / "query_rewrite.json"
+EVIDENCE_EXPERIMENT = PROJECT_ROOT / "eval" / "experiments" / "evidence_orchestration.json"
 DATASET_PATH = PROJECT_ROOT / "eval" / "datasets" / "golden_basic_20.json"
 
 
@@ -166,6 +167,73 @@ def test_runtime_metrics_exclude_warmup_and_failed_requests() -> None:
     assert metrics["quality"]["context_recall"] == pytest.approx(0.7)
 
 
+def test_evidence_diagnostics_aggregate_traceability_and_token_usage() -> None:
+    row = _row("one", latency=125, calls=2)
+    row.update(
+        {
+            "citation_traceability": {"total": 2, "verified": 2, "rate": 1.0},
+            "evidence_count": 2,
+            "evidence_chars": 123,
+            "evidence_status": "partial",
+            "missing_aspects": ["cash"],
+            "topk_outside_evidence_count": 1,
+            "evidence_model_call": {
+                "provider": "fake",
+                "request_model": "request-model",
+                "response_model": "response-model",
+                "input_tokens": 20,
+                "output_tokens": 5,
+                "total_tokens": 25,
+            },
+        }
+    )
+
+    metrics = build_group_metrics(
+        [row],
+        {"one": {"context_recall": 0.8, "context_precision": 0.9}},
+    )
+
+    evidence = metrics["evidence"]
+    assert evidence["average_evidence_count"] == 2
+    assert evidence["average_evidence_chars"] == 123
+    assert evidence["status_distribution"] == {"partial": 1}
+    assert evidence["missing_aspects"] == {"cash": 1}
+    assert evidence["topk_outside_evidence_total"] == 1
+    assert evidence["citation_traceability"]["rate"] == 1.0
+    assert evidence["token_usage"]["total_tokens_total"] == 25
+
+
+def test_evidence_comparison_requires_nonempty_full_traceability(
+    experiment: dict, dataset: dict
+) -> None:
+    experiment = json.loads(EVIDENCE_EXPERIMENT.read_text(encoding="utf-8"))
+    baseline = _group_metrics(0.8, 0.8, 100, 1)
+    candidate = _group_metrics(0.8, 0.9, 120, 2)
+    candidate["evidence"] = {
+        "citation_traceability": {
+            "case_count": 20,
+            "total_items": 0,
+            "verified_items": 0,
+            "rate": None,
+        }
+    }
+
+    comparison = _comparison(experiment, dataset, baseline, candidate)
+
+    assert comparison["checks"]["citation_traceability_passed"] is False
+    assert comparison["verdict"] == "evaluation_failed"
+    assert any("traceability" in issue for issue in comparison["issues"])
+
+    candidate["evidence"]["citation_traceability"] = {
+        "case_count": 20,
+        "total_items": 35,
+        "verified_items": 35,
+        "rate": 1.0,
+    }
+    comparison = _comparison(experiment, dataset, baseline, candidate)
+    assert comparison["checks"]["citation_traceability_passed"] is True
+
+
 def test_complete_quality_gain_within_cost_limits_is_effective(
     experiment: dict, dataset: dict
 ) -> None:
@@ -223,9 +291,7 @@ def test_incomplete_cost_or_execution_data_is_evaluation_failed(
 ) -> None:
     candidate = _group_metrics(0.74, 0.79, 120, 1, call_count=19, mismatches=1)
 
-    comparison = _comparison(
-        experiment, dataset, _group_metrics(0.70, 0.80, 100, 0), candidate
-    )
+    comparison = _comparison(experiment, dataset, _group_metrics(0.70, 0.80, 100, 0), candidate)
 
     assert comparison["verdict"] == "evaluation_failed"
     assert any("model call coverage" in issue for issue in comparison["issues"])

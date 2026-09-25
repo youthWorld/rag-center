@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import math
 import os
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
 from statistics import fmean
 from typing import Any, Protocol
@@ -162,6 +162,14 @@ def build_group_metrics(
                 **case_metrics,
                 "score_error": score.get("error"),
                 "retrieve_error": row.get("error"),
+                "citation_traceability_rate": (
+                    (row.get("citation_traceability") or {}).get("rate")
+                    if isinstance(row.get("citation_traceability"), dict)
+                    else None
+                ),
+                "evidence_count": row.get("evidence_count"),
+                "evidence_chars": row.get("evidence_chars"),
+                "evidence_status": row.get("evidence_status"),
             }
         )
 
@@ -187,6 +195,7 @@ def build_group_metrics(
             ),
             "degraded_case_count": sum(bool(row.get("degradation")) for row in successful_rows),
         },
+        "evidence": _build_evidence_diagnostics(formal_rows),
         "cases": cases,
     }
 
@@ -227,7 +236,10 @@ def build_comparison(
         delta=delta,
     )
     verdict = _decide_verdict(checks)
-    if experiment.get("rerank_experiment") and manifest["case_count"] != 20 and checks["complete"]:
+    specialized_experiment = bool(experiment.get("rerank_experiment")) or (
+        experiment.get("target") == "evidence_orchestration"
+    )
+    if specialized_experiment and manifest.get("case_count") != 20 and checks["complete"]:
         verdict = "preflight_only"
     return {
         "schema_version": "1.0",
@@ -248,6 +260,11 @@ def build_comparison(
             "baseline": baseline["failed_cases"],
             "candidate": candidate["failed_cases"],
         },
+        "evidence_diagnostics": (
+            candidate.get("evidence")
+            if experiment.get("target") == "evidence_orchestration"
+            else None
+        ),
         "recommendation": _recommendation(verdict),
     }
 
@@ -372,6 +389,18 @@ def _evaluate_checks(
         if metrics["execution"]["degraded_case_count"]:
             issues.append(f"{name} contains degraded target executions")
 
+    traceability_passed: bool | None = None
+    if experiment.get("target") == "evidence_orchestration":
+        evidence = candidate.get("evidence") or {}
+        traceability = evidence.get("citation_traceability") or {}
+        traceability_passed = (
+            traceability.get("case_count") == candidate["case_count"]
+            and traceability.get("total_items", 0) > 0
+            and traceability.get("rate") == 1.0
+        )
+        if not traceability_passed:
+            issues.append("candidate citation traceability must be complete and equal to 100%")
+
     complete = not issues
     primary_metric = experiment["primary_metric"]
     primary_delta = delta[primary_metric]
@@ -406,6 +435,7 @@ def _evaluate_checks(
             "p95_cost_passed": p95_cost_passed,
             "model_call_cost_passed": model_call_cost_passed,
             "cost_limits_passed": p95_cost_passed and model_call_cost_passed,
+            "citation_traceability_passed": traceability_passed,
         },
         issues,
     )
@@ -432,6 +462,91 @@ def _recommendation(verdict: str) -> str:
         "negative": "候选方案触发质量回归，建议保持或恢复基线配置。",
         "evaluation_failed": "先修复运行完整性问题并新建运行目录重跑。",
     }[verdict]
+
+
+def _build_evidence_diagnostics(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    evidence_counts = [
+        float(row["evidence_count"]) for row in rows if _finite_number(row.get("evidence_count"))
+    ]
+    evidence_chars = [
+        float(row["evidence_chars"]) for row in rows if _finite_number(row.get("evidence_chars"))
+    ]
+    outside_counts = [
+        float(row["topk_outside_evidence_count"])
+        for row in rows
+        if _finite_number(row.get("topk_outside_evidence_count"))
+    ]
+    statuses = Counter(
+        str(row["evidence_status"])
+        for row in rows
+        if isinstance(row.get("evidence_status"), str) and row["evidence_status"]
+    )
+    missing_aspects = Counter(
+        str(aspect)
+        for row in rows
+        for aspect in (row.get("missing_aspects") or [])
+        if isinstance(aspect, str) and aspect
+    )
+
+    traceability_rows = [
+        row["citation_traceability"]
+        for row in rows
+        if isinstance(row.get("citation_traceability"), dict)
+    ]
+    trace_total = sum(
+        value
+        for item in traceability_rows
+        if (value := _nonnegative_int_or_none(item.get("total"))) is not None
+    )
+    trace_verified = sum(
+        value
+        for item in traceability_rows
+        if (value := _nonnegative_int_or_none(item.get("verified"))) is not None
+    )
+
+    model_calls = [
+        row["evidence_model_call"]
+        for row in rows
+        if isinstance(row.get("evidence_model_call"), dict)
+    ]
+    token_usage: dict[str, Any] = {
+        "case_count": len(model_calls),
+        "providers": sorted(
+            {str(item["provider"]) for item in model_calls if item.get("provider")}
+        ),
+        "request_models": sorted(
+            {str(item["request_model"]) for item in model_calls if item.get("request_model")}
+        ),
+        "response_models": sorted(
+            {str(item["response_model"]) for item in model_calls if item.get("response_model")}
+        ),
+    }
+    for field in ("input_tokens", "output_tokens", "total_tokens"):
+        values = [
+            float(item[field])
+            for item in model_calls
+            if _finite_number(item.get(field)) and float(item[field]) >= 0
+        ]
+        token_usage[f"{field}_count"] = len(values)
+        token_usage[f"{field}_total"] = sum(values) if values else None
+        token_usage[f"average_{field}"] = _mean_or_none(values)
+
+    return {
+        "case_count": len(rows),
+        "average_evidence_count": _mean_or_none(evidence_counts),
+        "average_evidence_chars": _mean_or_none(evidence_chars),
+        "status_distribution": dict(sorted(statuses.items())),
+        "missing_aspects": dict(sorted(missing_aspects.items())),
+        "topk_outside_evidence_total": sum(outside_counts) if outside_counts else 0.0,
+        "average_topk_outside_evidence_count": _mean_or_none(outside_counts),
+        "citation_traceability": {
+            "case_count": len(traceability_rows),
+            "total_items": trace_total,
+            "verified_items": trace_verified,
+            "rate": trace_verified / trace_total if trace_total else None,
+        },
+        "token_usage": token_usage,
+    }
 
 
 def _judge_credentials(settings: Settings) -> tuple[str, str]:
@@ -499,6 +614,12 @@ def _finite_number(value: Any) -> bool:
 
 def _finite_or_none(value: Any) -> float | None:
     return float(value) if _finite_number(value) else None
+
+
+def _nonnegative_int_or_none(value: Any) -> int | None:
+    if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+        return value
+    return None
 
 
 def _difference(candidate: Any, baseline: Any) -> float | None:

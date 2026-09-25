@@ -44,6 +44,9 @@ class FakeDocumentService:
 class FakeRagService:
     async def retrieve(self, request, *, tenant_id: str) -> RagRetrieveResponse:
         del tenant_id
+        evidence_enabled = bool(
+            request.evidence_options is not None and request.evidence_options.enabled
+        )
         return RagRetrieveResponse(
             query=request.query,
             kb_id=request.kb_id,
@@ -56,7 +59,43 @@ class FakeRagService:
                     score=0.9,
                 )
             ],
-            metadata={"top_k": 5, "vector_store": "pgvector"},
+            evidence_pack=(
+                {
+                    "status": "complete",
+                    "missing_aspects": [],
+                    "groups": [
+                        {
+                            "aspect": "answer",
+                            "covered": True,
+                            "evidence": [{"evidence_id": "E1", "role": "core"}],
+                        }
+                    ],
+                    "items": [
+                        {
+                            "evidence_id": "E1",
+                            "chunk_id": "chunk-test",
+                            "kb_id": "kb-test",
+                            "document_id": "document-test",
+                            "title": "Test",
+                            "index_version": "v2",
+                            "content": "Relevant context",
+                            "source": "hybrid",
+                            "retrieved_rank": 1,
+                        }
+                    ],
+                }
+                if evidence_enabled
+                else None
+            ),
+            metadata={
+                "top_k": 5,
+                "vector_store": "pgvector",
+                "evidence": {
+                    "enabled": evidence_enabled,
+                    "executed": evidence_enabled,
+                    "degraded": False,
+                },
+            },
         )
 
 
@@ -133,3 +172,43 @@ async def test_business_routes_use_uniform_success_response() -> None:
     assert retrieve_response.json()["code"] == 0
     assert tree_response.json() == {"code": 0, "msg": "success", "data": []}
     assert retrieve_response.json()["data"]["retrieved_chunks"][0]["score"] == 0.9
+    assert retrieve_response.json()["data"]["evidence_pack"] is None
+
+
+@pytest.mark.asyncio
+async def test_retrieve_contract_accepts_and_returns_evidence_pack() -> None:
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/api/v1/rag/retrieve",
+            json={
+                "kb_id": "kb-test",
+                "user_id": "user-test",
+                "query": "question",
+                "evidence_options": {"enabled": True, "max_items": 20},
+            },
+        )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["evidence_pack"]["items"][0]["evidence_id"] == "E1"
+    assert data["metadata"]["evidence"]["executed"] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("max_items", [0, 21])
+async def test_retrieve_contract_rejects_invalid_evidence_max_items(max_items: int) -> None:
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/api/v1/rag/retrieve",
+            json={
+                "kb_id": "kb-test",
+                "user_id": "user-test",
+                "query": "question",
+                "evidence_options": {"enabled": True, "max_items": max_items},
+            },
+        )
+
+    assert response.status_code == 400
+    assert response.json()["code"] == 20004

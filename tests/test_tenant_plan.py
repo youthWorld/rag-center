@@ -137,6 +137,7 @@ async def test_free_speed_profile_succeeds_and_exposes_policy() -> None:
         "effective_mode": "vector",
         "effective_rerank": False,
         "effective_query_rewrite": False,
+        "effective_evidence": False,
     }
     assert response.metadata["top_k"] == 5
 

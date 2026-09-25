@@ -12,6 +12,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from app.core.config import Settings  # noqa: E402
 from app.evaluation.dataset import DatasetValidationError, load_and_validate_dataset  # noqa: E402
+from app.evaluation.evidence_runner import EvidenceEvaluationRunner  # noqa: E402
 from app.evaluation.experiment import (  # noqa: E402
     ExperimentValidationError,
     load_and_validate_experiment,
@@ -191,7 +192,11 @@ async def _run_retrievals(
         timeout_seconds=experiment["timeout_seconds"],
     ) as client:
         runner_cls = (
-            RerankEvaluationRunner if experiment.get("rerank_experiment") else EvaluationRunner
+            EvidenceEvaluationRunner
+            if experiment.get("target") == "evidence_orchestration"
+            else RerankEvaluationRunner
+            if experiment.get("rerank_experiment")
+            else EvaluationRunner
         )
         runner = runner_cls(
             project_root=PROJECT_ROOT,
@@ -204,6 +209,7 @@ async def _run_retrievals(
             **(
                 {"settings": Settings(), "tenant_id": tenant_id}
                 if experiment.get("rerank_experiment")
+                or experiment.get("target") == "evidence_orchestration"
                 else {}
             ),
         )

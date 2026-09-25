@@ -29,12 +29,18 @@ from app.repositories.retrieval_log_repository import RetrievalLogRepository
 from app.schemas.hybrid_search import RetrievalMode, RetrievalOptions
 from app.schemas.rag import (
     MULTI_KB_MAX,
+    EvidenceOptions,
     QueryOptions,
     RagRetrieveRequest,
     RagRetrieveResponse,
     RetrievedChunk,
+    RetrieveEvidenceMetadata,
 )
 from app.services.context_expansion_service import ContextExpansionService
+from app.services.evidence_orchestration_service import (
+    EvidenceOrchestrationResult,
+    EvidenceOrchestrationService,
+)
 from app.services.graph_candidate_expansion_service import GraphCandidateExpansionService
 from app.services.hybrid_search_service import HybridSearchService
 from app.services.multi_kb_fusion_service import MultiKBFusionService
@@ -73,6 +79,7 @@ class RagService:
         rate_limit_service: RateLimitService | None = None,
         graph_candidate_expansion_service: GraphCandidateExpansionService | None = None,
         context_expansion_service: ContextExpansionService | None = None,
+        evidence_orchestration_service: EvidenceOrchestrationService | None = None,
         index_version_repository: IndexVersionRepository | None = None,
     ) -> None:
         self.session = session
@@ -99,6 +106,7 @@ class RagService:
         self.context_expansion_service = context_expansion_service or ContextExpansionService(
             session
         )
+        self.evidence_orchestration_service = evidence_orchestration_service
         self.index_version_repository = index_version_repository or IndexVersionRepository(session)
         self.logger = get_logger(__name__)
 
@@ -137,12 +145,14 @@ class RagService:
         mode = self._resolve_retrieval_mode(effective_request)
         rerank_enabled = self._resolve_rerank_enabled(effective_request)
         query_rewrite_enabled = self._resolve_query_rewrite_enabled(effective_request)
+        evidence_options = self._resolve_evidence_options(effective_request)
         self._enforce_plan_features(
             plan,
             profile=profile,
             mode=mode,
             rerank_enabled=rerank_enabled,
             query_rewrite_enabled=query_rewrite_enabled,
+            evidence_enabled=bool(evidence_options.enabled),
         )
 
         observability = RetrieveObservability(
@@ -167,6 +177,7 @@ class RagService:
                 mode=mode,
                 rerank_enabled=rerank_enabled,
                 query_rewrite_enabled=query_rewrite_enabled,
+                evidence_options=evidence_options,
                 observability=observability,
             )
 
@@ -182,6 +193,7 @@ class RagService:
         mode: RetrievalMode,
         rerank_enabled: bool,
         query_rewrite_enabled: bool,
+        evidence_options: EvidenceOptions,
         observability: RetrieveObservability,
     ) -> RagRetrieveResponse:
         if self.rate_limit_service is not None:
@@ -198,6 +210,7 @@ class RagService:
                 mode=mode,
                 rerank_enabled=rerank_enabled,
                 query_rewrite_enabled=query_rewrite_enabled,
+                evidence_options=evidence_options,
                 observability=observability,
             )
 
@@ -287,14 +300,17 @@ class RagService:
             else (candidate.chunks, {})
         )
         filtered_candidates = filtered_candidates[: max(top_k, 20)]
+        base_candidate_snapshot = [
+            dict(item) for item in self._tag_kb_chunks(filtered_candidates, knowledge_base)
+        ]
         graph_result = await self.graph_candidate_expansion_service.expand_candidates(
             tenant_id=tenant_id,
             kb_ids=[knowledge_base.id],
-            seeds=self._tag_kb_chunks(filtered_candidates, knowledge_base),
+            seeds=base_candidate_snapshot,
             index_version=index_version,
         )
         graph_candidates = self._merge_graph_candidates(
-            self._tag_kb_chunks(filtered_candidates, knowledge_base),
+            base_candidate_snapshot,
             self._tag_kb_chunks(graph_result.candidates, knowledge_base),
         )
         retrieved = graph_candidates[: max(top_k, 30)]
@@ -398,7 +414,7 @@ class RagService:
             )
         else:
             response_chunks, graph_selected_count = self._select_without_rerank(
-                seeds=self._tag_kb_chunks(filtered_candidates, knowledge_base),
+                seeds=base_candidate_snapshot,
                 injected=self._tag_kb_chunks(graph_result.candidates, knowledge_base),
                 top_k=top_k,
             )
@@ -441,6 +457,18 @@ class RagService:
             )
             for item in response_chunks
         ]
+        evidence_result = await self._orchestrate_evidence(
+            query=request.query,
+            tenant_id=tenant_id,
+            kb_ids=[knowledge_base.id],
+            index_versions={knowledge_base.id: index_version},
+            candidates=base_candidate_snapshot,
+            retrieved_chunks=response_chunks,
+            options=evidence_options,
+        )
+        evidence_metadata = evidence_result.metadata.model_dump(mode="json")
+        if evidence_result.metadata.enabled:
+            application_model_call_details["evidence"] = int(evidence_result.metadata.executed)
         serialized_chunks = [chunk.model_dump() for chunk in retrieved_chunks]
         retrieval_log = await self.retrieval_log_repository.create(
             tenant_id=tenant_id,
@@ -452,7 +480,7 @@ class RagService:
             search_query=search_query,
             effective_query=query_processing.effective_query,
             retrieved_chunks=serialized_chunks,
-            retrieval_metadata=retrieval_metadata,
+            retrieval_metadata={**retrieval_metadata, "evidence": evidence_metadata},
             top_k=top_k,
             vector_store=self.settings.vector_store,
             latency_ms=latency_ms,
@@ -486,6 +514,7 @@ class RagService:
             kb_id=knowledge_base.id,
             kb_ids=[knowledge_base.id],
             retrieved_chunks=retrieved_chunks,
+            evidence_pack=evidence_result.pack,
             metadata={
                 "log_id": log_id,
                 "trace_id": observability.trace_id,
@@ -516,6 +545,7 @@ class RagService:
                     "degraded": context_result.degraded,
                     "error": context_result.error,
                 },
+                "evidence": evidence_metadata,
                 "rerank": self._build_rerank_metadata(
                     enabled=rerank_enabled,
                     top_n=rerank_top_n,
@@ -531,6 +561,7 @@ class RagService:
                     "effective_mode": mode,
                     "effective_rerank": rerank_enabled,
                     "effective_query_rewrite": query_rewrite_enabled,
+                    "effective_evidence": bool(evidence_options.enabled),
                 },
                 "application_model_calls": sum(application_model_call_details.values()),
                 "application_model_call_details": application_model_call_details,
@@ -549,6 +580,7 @@ class RagService:
         mode: RetrievalMode,
         rerank_enabled: bool,
         query_rewrite_enabled: bool,
+        evidence_options: EvidenceOptions,
         observability: RetrieveObservability,
     ) -> RagRetrieveResponse:
         knowledge_bases = await self._load_knowledge_bases(
@@ -715,6 +747,7 @@ class RagService:
             per_kb_chunks,
             rrf_k=rrf_k,
         )
+        base_candidate_snapshot = [dict(item) for item in direct_retrieved]
         fused_count = len(direct_retrieved)
         graph_result = await self.graph_candidate_expansion_service.expand_candidates(
             tenant_id=tenant_id, kb_ids=kb_ids, seeds=direct_retrieved[:20]
@@ -859,6 +892,18 @@ class RagService:
             )
             for item in response_chunks
         ]
+        evidence_result = await self._orchestrate_evidence(
+            query=request.query,
+            tenant_id=tenant_id,
+            kb_ids=kb_ids,
+            index_versions=versions,
+            candidates=base_candidate_snapshot,
+            retrieved_chunks=response_chunks,
+            options=evidence_options,
+        )
+        evidence_metadata = evidence_result.metadata.model_dump(mode="json")
+        if evidence_result.metadata.enabled:
+            application_model_call_details["evidence"] = int(evidence_result.metadata.executed)
         serialized_chunks = [chunk.model_dump() for chunk in retrieved_chunks]
         retrieval_log = await self.retrieval_log_repository.create(
             tenant_id=tenant_id,
@@ -871,7 +916,7 @@ class RagService:
             search_query=search_query,
             effective_query=query_processing.effective_query,
             retrieved_chunks=serialized_chunks,
-            retrieval_metadata=retrieval_metadata,
+            retrieval_metadata={**retrieval_metadata, "evidence": evidence_metadata},
             top_k=top_k,
             vector_store=self.settings.vector_store,
             latency_ms=latency_ms,
@@ -905,6 +950,7 @@ class RagService:
             kb_id=kb_ids[0],
             kb_ids=kb_ids,
             retrieved_chunks=retrieved_chunks,
+            evidence_pack=evidence_result.pack,
             metadata={
                 "log_id": log_id,
                 "trace_id": observability.trace_id,
@@ -935,6 +981,7 @@ class RagService:
                     "degraded": context_result.degraded,
                     "error": context_result.error,
                 },
+                "evidence": evidence_metadata,
                 "rerank": self._build_rerank_metadata(
                     enabled=rerank_enabled,
                     top_n=rerank_top_n,
@@ -950,6 +997,7 @@ class RagService:
                     "effective_mode": mode,
                     "effective_rerank": rerank_enabled,
                     "effective_query_rewrite": query_rewrite_enabled,
+                    "effective_evidence": bool(evidence_options.enabled),
                 },
                 "application_model_calls": sum(application_model_call_details.values()),
                 "application_model_call_details": application_model_call_details,
@@ -1556,6 +1604,7 @@ class RagService:
         mode: RetrievalMode,
         rerank_enabled: bool,
         query_rewrite_enabled: bool,
+        evidence_enabled: bool,
     ) -> None:
         if mode == "hybrid" and not plan.features.hybrid_allowed:
             self._raise_feature_not_allowed(plan, profile=profile, feature="hybrid retrieval")
@@ -1563,6 +1612,8 @@ class RagService:
             self._raise_feature_not_allowed(plan, profile=profile, feature="rerank")
         if query_rewrite_enabled and not plan.features.query_rewrite_allowed:
             self._raise_feature_not_allowed(plan, profile=profile, feature="query rewrite")
+        if evidence_enabled and not plan.features.evidence_allowed:
+            self._raise_feature_not_allowed(plan, profile=profile, feature="evidence")
 
     @staticmethod
     def _raise_feature_not_allowed(
@@ -1724,6 +1775,53 @@ class RagService:
         if options.strategy == "rewrite":
             return True
         return self.settings.query_rewrite_enabled
+
+    def _resolve_evidence_options(self, request: RagRetrieveRequest) -> EvidenceOptions:
+        requested = request.evidence_options
+        enabled = (
+            requested.enabled
+            if requested is not None and requested.enabled is not None
+            else self.settings.evidence_enabled
+        )
+        return EvidenceOptions(
+            enabled=bool(enabled),
+            max_items=requested.max_items if requested is not None else None,
+        )
+
+    async def _orchestrate_evidence(
+        self,
+        *,
+        query: str,
+        tenant_id: str,
+        kb_ids: list[str],
+        index_versions: dict[str, str],
+        candidates: list[dict[str, Any]],
+        retrieved_chunks: list[dict[str, Any]],
+        options: EvidenceOptions,
+    ) -> EvidenceOrchestrationResult:
+        if not options.enabled:
+            return EvidenceOrchestrationResult(
+                pack=None,
+                metadata=RetrieveEvidenceMetadata(enabled=False),
+            )
+        if self.evidence_orchestration_service is None:
+            return EvidenceOrchestrationResult(
+                pack=None,
+                metadata=RetrieveEvidenceMetadata(
+                    enabled=True,
+                    degraded=True,
+                    error="evidence service unavailable",
+                ),
+            )
+        return await self.evidence_orchestration_service.orchestrate(
+            query=query,
+            tenant_id=tenant_id,
+            kb_ids=kb_ids,
+            index_versions=index_versions,
+            candidates=candidates,
+            retrieved_chunks=retrieved_chunks,
+            options=options,
+        )
 
     def _resolve_rerank_top_n(self, request: RagRetrieveRequest) -> int:
         if request.rerank_options is not None and request.rerank_options.top_n is not None:

@@ -1,9 +1,32 @@
 from abc import ABC, abstractmethod
+from dataclasses import asdict, dataclass
 from typing import Any
 
 
 class LLMProviderError(RuntimeError):
     """Raised when an LLM provider cannot return the expected JSON object."""
+
+
+@dataclass(frozen=True, slots=True)
+class LLMCallMetadata:
+    provider: str | None = None
+    request_model: str | None = None
+    response_model: str | None = None
+    latency_ms: int | None = None
+    request_id: str | None = None
+    finish_reason: str | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    total_tokens: int | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True, slots=True)
+class LLMJSONResponse:
+    output: dict[str, Any]
+    metadata: LLMCallMetadata
 
 
 class LLMProvider(ABC):
@@ -18,6 +41,26 @@ class LLMProvider(ABC):
         max_tokens: int | None = None,
     ) -> dict[str, Any]:
         """Call a chat model and return its parsed JSON object response."""
+
+    async def chat_json_with_metadata(
+        self,
+        *,
+        system_prompt: str,
+        user_payload: dict[str, Any],
+        temperature: float = 0.0,
+        timeout_seconds: float | None = None,
+        max_tokens: int | None = None,
+    ) -> LLMJSONResponse:
+        """Return JSON plus portable call metadata for providers that support it."""
+
+        output = await self.chat_json(
+            system_prompt=system_prompt,
+            user_payload=user_payload,
+            temperature=temperature,
+            timeout_seconds=timeout_seconds,
+            max_tokens=max_tokens,
+        )
+        return LLMJSONResponse(output=output, metadata=LLMCallMetadata())
 
     async def chat_text(
         self,

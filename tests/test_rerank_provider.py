@@ -85,16 +85,10 @@ async def test_noop_rerank_preserves_vector_order() -> None:
 
 @pytest.mark.asyncio
 async def test_openai_compatible_llm_provider_parses_json() -> None:
-    provider = OpenAICompatibleLLMProvider(
-        Settings(llm_api_key="test-key", llm_model="test-model")
-    )
+    provider = OpenAICompatibleLLMProvider(Settings(llm_api_key="test-key", llm_model="test-model"))
     create = AsyncMock(
         return_value=SimpleNamespace(
-            choices=[
-                SimpleNamespace(
-                    message=SimpleNamespace(content='{"rankings": []}')
-                )
-            ]
+            choices=[SimpleNamespace(message=SimpleNamespace(content='{"rankings": []}'))]
         )
     )
     provider._client = SimpleNamespace(
@@ -115,6 +109,74 @@ async def test_openai_compatible_llm_provider_parses_json() -> None:
     assert json.loads(kwargs["messages"][1]["content"]) == {"query": "question"}
     assert kwargs["response_format"] == {"type": "json_object"}
     assert kwargs["timeout"] == 7
+
+
+@pytest.mark.asyncio
+async def test_openai_compatible_llm_provider_returns_portable_metadata() -> None:
+    provider = OpenAICompatibleLLMProvider(
+        Settings(llm_api_key="test-key", llm_model="request-model")
+    )
+    create = AsyncMock(
+        return_value=SimpleNamespace(
+            id="completion-id",
+            _request_id="request-id",
+            model="response-model",
+            usage=SimpleNamespace(
+                prompt_tokens=12,
+                completion_tokens=5,
+                total_tokens=17,
+            ),
+            choices=[
+                SimpleNamespace(
+                    finish_reason="stop",
+                    message=SimpleNamespace(content='{"rankings": []}'),
+                )
+            ],
+        )
+    )
+    provider._client = SimpleNamespace(
+        chat=SimpleNamespace(completions=SimpleNamespace(create=create))
+    )
+
+    result = await provider.chat_json_with_metadata(
+        system_prompt="system", user_payload={"query": "question"}
+    )
+
+    assert result.output == {"rankings": []}
+    assert result.metadata.request_model == "request-model"
+    assert result.metadata.response_model == "response-model"
+    assert result.metadata.request_id == "request-id"
+    assert result.metadata.finish_reason == "stop"
+    assert result.metadata.input_tokens == 12
+    assert result.metadata.output_tokens == 5
+    assert result.metadata.total_tokens == 17
+    assert isinstance(result.metadata.latency_ms, int)
+
+
+@pytest.mark.asyncio
+async def test_openai_compatible_llm_provider_allows_missing_metadata_fields() -> None:
+    provider = OpenAICompatibleLLMProvider(Settings(llm_api_key="test-key"))
+    provider._client = SimpleNamespace(
+        chat=SimpleNamespace(
+            completions=SimpleNamespace(
+                create=AsyncMock(
+                    return_value=SimpleNamespace(
+                        choices=[SimpleNamespace(message=SimpleNamespace(content="{}"))]
+                    )
+                )
+            )
+        )
+    )
+
+    result = await provider.chat_json_with_metadata(system_prompt="system", user_payload={})
+
+    assert result.output == {}
+    assert result.metadata.response_model is None
+    assert result.metadata.request_id is None
+    assert result.metadata.finish_reason is None
+    assert result.metadata.input_tokens is None
+    assert result.metadata.output_tokens is None
+    assert result.metadata.total_tokens is None
 
 
 @pytest.mark.asyncio

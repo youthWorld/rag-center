@@ -64,6 +64,11 @@ def generate_report(run_dir: Path) -> str:
         *_metric_table_rows(comparison),
         "",
         *(
+            _evidence_diagnostics(comparison, candidate_metrics)
+            if experiment.get("target") == "evidence_orchestration"
+            else []
+        ),
+        *(
             _graph_diagnostics(baseline_rows, candidate_rows)
             if experiment.get("experiment_id") == "context_graph_upgrade"
             else []
@@ -118,6 +123,11 @@ def generate_report(run_dir: Path) -> str:
         "## 原始结果文件位置",
         "",
         *(["- `shared_candidates.raw.jsonl`"] if experiment.get("rerank_experiment") else []),
+        *(
+            ["- `shared_pipeline.raw.jsonl`"]
+            if experiment.get("target") == "evidence_orchestration"
+            else []
+        ),
         "- `baseline.raw.jsonl`",
         "- `candidate.raw.jsonl`",
         "- `baseline.metrics.json`",
@@ -142,9 +152,7 @@ def write_report(run_dir: Path) -> Path:
 def _graph_diagnostics(
     baseline_rows: list[dict[str, Any]], candidate_rows: list[dict[str, Any]]
 ) -> list[str]:
-    graph_case_count = sum(
-        int(row.get("graph_injected_count") or 0) > 0 for row in candidate_rows
-    )
+    graph_case_count = sum(int(row.get("graph_injected_count") or 0) > 0 for row in candidate_rows)
     supplemental_case_count = sum(
         int(row.get("supplemental_chunk_count") or 0) > 0 for row in candidate_rows
     )
@@ -204,8 +212,51 @@ def _rerank_diagnostics(
     ]
 
 
+def _evidence_diagnostics(
+    comparison: dict[str, Any], candidate_metrics: dict[str, Any]
+) -> list[str]:
+    diagnostics = comparison.get("evidence_diagnostics") or candidate_metrics.get("evidence") or {}
+    traceability = diagnostics.get("citation_traceability") or {}
+    token_usage = diagnostics.get("token_usage") or {}
+    passed = comparison.get("checks", {}).get("citation_traceability_passed") is True
+    statuses = diagnostics.get("status_distribution") or {}
+    missing = diagnostics.get("missing_aspects") or {}
+    request_models = token_usage.get("request_models") or []
+    response_models = token_usage.get("response_models") or []
+    return [
+        "## 证据编排专题硬校验与诊断（非第五项正式指标）",
+        "",
+        "- 两组共用同一次 v2 Hybrid/RRF Top20、Qwen3 精排 Top10 和 Context 扩展结果；"
+        "baseline 使用原始 Top10，candidate 只使用 `evidence_pack.items`。",
+        "- 引用回溯率："
+        f"{_format_percent_plain(traceability.get('rate'))}"
+        f"（{traceability.get('verified_items', 0)}/{traceability.get('total_items', 0)}，"
+        f"硬门槛 100%，{'通过' if passed else '未通过'}）。",
+        f"- 平均证据数量：{_format_number(diagnostics.get('average_evidence_count'))}；"
+        f"平均证据字符数：{_format_number(diagnostics.get('average_evidence_chars'))}。",
+        f"- Evidence 状态分布：{_format_json_mapping(statuses)}。",
+        f"- 缺失要点分布：{_format_json_mapping(missing)}。",
+        "- Top10 外证据："
+        f"总计 {_format_number(diagnostics.get('topk_outside_evidence_total'))} 条，"
+        f"每题平均 {_format_number(diagnostics.get('average_topk_outside_evidence_count'))} 条。",
+        "- Evidence LLM Token："
+        f"input 总计 {_format_number(token_usage.get('input_tokens_total'))}、"
+        f"output 总计 {_format_number(token_usage.get('output_tokens_total'))}、"
+        f"total 总计 {_format_number(token_usage.get('total_tokens_total'))}；"
+        f"每题平均 total {_format_number(token_usage.get('average_total_tokens'))}。",
+        "- Evidence LLM 模型："
+        f"请求={', '.join(request_models) or '未记录'}，"
+        f"响应={', '.join(response_models) or '未记录'}。",
+        "- 理论成本：Provider 层不固化价格；当前未配置独立价格表，因此只报告真实 Token usage，"
+        "不把费用估算作为正式指标。",
+        "",
+    ]
+
+
 def _run_type(experiment: dict[str, Any], manifest: dict[str, Any]) -> str:
-    if experiment.get("rerank_experiment") and manifest["case_count"] != 20:
+    if (
+        experiment.get("rerank_experiment") or experiment.get("target") == "evidence_orchestration"
+    ) and manifest["case_count"] != 20:
         return "预检（非正式结论）"
     return "正式评测"
 
@@ -222,6 +273,14 @@ def _conclusion_paragraph(comparison: dict[str, Any], dataset: dict[str, Any]) -
         f"在 `{dataset['version']}` 的 {comparison['baseline']['case_count']} 道题上，"
         f"主指标 {primary} 变化 {_format_points(delta)}。"
     )
+    if comparison["experiment_id"] == "evidence_orchestration":
+        traceability = (comparison.get("evidence_diagnostics") or {}).get(
+            "citation_traceability", {}
+        )
+        conclusion += (
+            f"引用回溯率为 {_format_percent_plain(traceability.get('rate'))}，"
+            "该项是独立硬门槛，不替代四项正式指标。"
+        )
     if comparison["experiment_id"].startswith("rerank_"):
         recall_delta = comparison["delta"].get("context_recall")
         precision_delta = comparison["delta"].get("context_precision")
@@ -400,6 +459,12 @@ def _format_mapping(value: dict[str, Any]) -> str:
     return "，".join(f"{key}=`{item}`" for key, item in sorted(value.items()))
 
 
+def _format_json_mapping(value: Any) -> str:
+    if not isinstance(value, dict) or not value:
+        return "无"
+    return json.dumps(value, ensure_ascii=False, sort_keys=True)
+
+
 def _format_score(value: Any) -> str:
     return f"{float(value):.3f}" if _number(value) else "不可用"
 
@@ -418,6 +483,10 @@ def _format_ms_delta(value: Any) -> str:
 
 def _format_percent(value: Any) -> str:
     return f"{float(value) * 100:+.1f}%" if _number(value) else "不可用"
+
+
+def _format_percent_plain(value: Any) -> str:
+    return f"{float(value) * 100:.1f}%" if _number(value) else "不可用"
 
 
 def _format_number(value: Any) -> str:

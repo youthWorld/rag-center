@@ -21,6 +21,7 @@ from app.repositories.knowledge_base_repository import KnowledgeBaseRepository
 from app.repositories.retrieval_log_repository import RetrievalLogRepository
 from app.repositories.tenant_repository import TenantRepository
 from app.services.document_service import DocumentService
+from app.services.evidence_orchestration_service import EvidenceOrchestrationService
 from app.services.feedback_service import FeedbackService
 from app.services.index_version_service import IndexVersionService
 from app.services.indexing_service import IndexingService, build_indexing_service
@@ -146,6 +147,7 @@ def get_rag_service(
     plan_resolver: PlanResolver = Depends(get_plan_resolver),
     rate_limit_service: RateLimitService = Depends(get_rate_limit_service),
 ) -> RagService:
+    llm_provider = get_llm_provider(app_settings)
     return RagService(
         session=session,
         settings=app_settings,
@@ -160,9 +162,14 @@ def get_rag_service(
         query_pipeline=QueryPipeline(
             rewrite_enabled=app_settings.query_rewrite_enabled,
             rewrite_processor=LLMRewriteProcessor(
-                get_llm_provider(app_settings),
+                llm_provider,
                 timeout_ms=app_settings.query_rewrite_timeout_ms,
             ),
+        ),
+        evidence_orchestration_service=EvidenceOrchestrationService(
+            session,
+            llm_provider,
+            timeout_seconds=app_settings.evidence_timeout_seconds,
         ),
     )
 

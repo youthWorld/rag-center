@@ -17,6 +17,7 @@ class PlanFeatures:
     hybrid_allowed: bool
     rerank_allowed: bool
     query_rewrite_allowed: bool
+    evidence_allowed: bool
 
 
 @dataclass(frozen=True, slots=True)

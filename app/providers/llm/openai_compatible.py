@@ -1,4 +1,5 @@
 import json
+import time
 from typing import Any
 
 from openai import AsyncOpenAI
@@ -10,7 +11,12 @@ from app.core.exceptions import (
     map_llm_exception,
 )
 from app.core.logging import get_logger, log_llm_call
-from app.providers.llm.base import LLMProvider, LLMProviderError
+from app.providers.llm.base import (
+    LLMCallMetadata,
+    LLMJSONResponse,
+    LLMProvider,
+    LLMProviderError,
+)
 
 
 class OpenAICompatibleLLMProvider(LLMProvider):
@@ -81,6 +87,24 @@ class OpenAICompatibleLLMProvider(LLMProvider):
         timeout_seconds: float | None = None,
         max_tokens: int | None = None,
     ) -> dict[str, Any]:
+        result = await self.chat_json_with_metadata(
+            system_prompt=system_prompt,
+            user_payload=user_payload,
+            temperature=temperature,
+            timeout_seconds=timeout_seconds,
+            max_tokens=max_tokens,
+        )
+        return result.output
+
+    async def chat_json_with_metadata(
+        self,
+        *,
+        system_prompt: str,
+        user_payload: dict[str, Any],
+        temperature: float = 0.0,
+        timeout_seconds: float | None = None,
+        max_tokens: int | None = None,
+    ) -> LLMJSONResponse:
         request_kwargs: dict[str, Any] = {
             "model": self.settings.llm_model,
             "messages": [
@@ -98,6 +122,7 @@ class OpenAICompatibleLLMProvider(LLMProvider):
         if timeout_seconds is not None:
             request_kwargs["timeout"] = timeout_seconds
 
+        started = time.perf_counter()
         response = await self._chat_completion(
             request_kwargs=request_kwargs,
             user_payload=user_payload,
@@ -110,7 +135,52 @@ class OpenAICompatibleLLMProvider(LLMProvider):
             raise LLMProviderError("chat completion returned invalid JSON") from exception
         if not isinstance(payload, dict):
             raise LLMProviderError("chat completion JSON response must be an object")
-        return payload
+        latency_ms = int((time.perf_counter() - started) * 1000)
+        return LLMJSONResponse(
+            output=payload,
+            metadata=LLMCallMetadata(
+                provider=self.settings.llm_provider,
+                request_model=self.settings.llm_model,
+                response_model=self._read_string(response, "model"),
+                latency_ms=latency_ms,
+                request_id=(
+                    self._read_string(response, "request_id")
+                    or self._read_string(response, "_request_id")
+                    or self._read_string(response, "id")
+                ),
+                finish_reason=self._finish_reason(response),
+                input_tokens=self._usage_value(response, "prompt_tokens", "input_tokens"),
+                output_tokens=self._usage_value(
+                    response, "completion_tokens", "output_tokens"
+                ),
+                total_tokens=self._usage_value(response, "total_tokens"),
+            ),
+        )
+
+    @staticmethod
+    def _read_value(value: Any, key: str) -> Any:
+        return value.get(key) if isinstance(value, dict) else getattr(value, key, None)
+
+    @classmethod
+    def _read_string(cls, value: Any, key: str) -> str | None:
+        item = cls._read_value(value, key)
+        return str(item) if item is not None and str(item).strip() else None
+
+    @classmethod
+    def _finish_reason(cls, response: Any) -> str | None:
+        choices = cls._read_value(response, "choices") or []
+        if not choices:
+            return None
+        return cls._read_string(choices[0], "finish_reason")
+
+    @classmethod
+    def _usage_value(cls, response: Any, *keys: str) -> int | None:
+        usage = cls._read_value(response, "usage")
+        for key in keys:
+            value = cls._read_value(usage, key) if usage is not None else None
+            if isinstance(value, int) and not isinstance(value, bool):
+                return value
+        return None
 
     async def chat_text(
         self,

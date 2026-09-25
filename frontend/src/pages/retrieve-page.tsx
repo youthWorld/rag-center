@@ -4,6 +4,7 @@ import {
   ChevronDown,
   Clock3,
   Database,
+  BookOpenCheck,
   FileSearch,
   Gauge,
   LoaderCircle,
@@ -25,7 +26,7 @@ import { Card } from "../components/ui/card";
 import { HelpTooltip } from "../components/ui/help-tooltip";
 import { Input } from "../components/ui/input";
 import { Textarea } from "../components/ui/textarea";
-import { getApiErrorCode, getApiErrorMessage } from "../lib/api";
+import { getApiErrorCode, getApiErrorData, getApiErrorMessage } from "../lib/api";
 import {
   getMaxKnowledgeBasesPerRetrieve,
   getProfileUpgradeMessage,
@@ -36,6 +37,7 @@ import { knowledgeBaseService } from "../services/knowledge-base";
 import { ragService, type RetrievePayload } from "../services/rag";
 import type {
   AuthMeData,
+  EvidencePack,
   KnowledgeBaseTenantTree,
   QueryProcessingMetadata,
   RagRetrieveResponse,
@@ -72,6 +74,8 @@ export function RetrievePage() {
   const [rerankEnabled, setRerankEnabled] = useState(false);
   const [rerankTopN, setRerankTopN] = useState("10");
   const [queryRewriteEnabled, setQueryRewriteEnabled] = useState(false);
+  const [evidenceEnabled, setEvidenceEnabled] = useState(false);
+  const [evidenceMaxItems, setEvidenceMaxItems] = useState("8");
   const [result, setResult] = useState<RagRetrieveResponse | null>(null);
   const [isRunning, setIsRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -121,6 +125,7 @@ export function RetrievePage() {
     }
     if (!tenantInfo.features.rerank_allowed) setRerankEnabled(false);
     if (!tenantInfo.features.query_rewrite_allowed) setQueryRewriteEnabled(false);
+    if (!tenantInfo.features.evidence_allowed) setEvidenceEnabled(false);
   }, [tenantInfo]);
 
   useEffect(() => {
@@ -162,6 +167,10 @@ export function RetrievePage() {
       setError("当前套餐不支持 hybrid 检索，请调整自定义模式。");
       return;
     }
+    if (evidenceEnabled && !tenantInfo.features.evidence_allowed) {
+      setError("当前套餐不支持证据编排，请升级到 Pro 套餐。");
+      return;
+    }
 
     const payload: RetrievePayload = {
       ...(selectedKbIds.length === 1 ? { kb_id: selectedKbIds[0] } : { kb_ids: selectedKbIds }),
@@ -170,6 +179,14 @@ export function RetrievePage() {
       profile,
       ...(indexVersion ? { index_version: indexVersion } : {}),
     };
+    const evidenceMaxItemsValue = evidenceEnabled ? parsePositiveInteger(evidenceMaxItems) : undefined;
+    if (evidenceEnabled && (!evidenceMaxItemsValue || evidenceMaxItemsValue > 20)) {
+      setError("最大证据数必须是 1～20 的整数。");
+      return;
+    }
+    payload.evidence_options = evidenceEnabled
+      ? { enabled: true, max_items: evidenceMaxItemsValue }
+      : { enabled: false };
 
     if (profile === "custom") {
       const topKValue = parsePositiveInteger(topK);
@@ -217,8 +234,11 @@ export function RetrievePage() {
     try {
       setResult(await ragService.retrieve(payload));
     } catch (requestError) {
+      const errorData = getApiErrorData(requestError);
+      const isMultiKbLimit = getApiErrorCode(requestError) === 20013
+        && errorData?.feature === "multi-knowledge-base retrieval";
       setError(
-        getApiErrorCode(requestError) === 20013
+        isMultiKbLimit
           ? `当前套餐最多支持 ${maxKbPerRetrieve} 个库联合检索，请减少勾选数量。`
           : getApiErrorMessage(requestError),
       );
@@ -498,6 +518,37 @@ export function RetrievePage() {
               </div>
             )}
           </div>
+
+          <div>
+            <p className="border-b border-line pb-3 text-[10px] font-bold uppercase tracking-[0.16em] text-muted">证据编排</p>
+            <div className="mt-4 rounded-xl border border-line bg-paper/70 p-4 sm:p-5">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <p className="text-sm font-bold text-ink">可信引用 Evidence Pack</p>
+                  <p className="mt-1 text-xs leading-5 text-muted">独立于检索档位，从本次候选中选择可回查原文的证据，不改变召回结果。</p>
+                </div>
+                <label className={`inline-flex h-11 w-fit items-center gap-2.5 rounded-xl border border-line bg-white px-3.5 text-sm font-semibold text-ink ${tenantInfo?.features.evidence_allowed ? "cursor-pointer" : "cursor-not-allowed opacity-50"}`}>
+                  <input
+                    type="checkbox"
+                    checked={evidenceEnabled}
+                    disabled={!tenantInfo?.features.evidence_allowed}
+                    onChange={(event) => setEvidenceEnabled(event.target.checked)}
+                    className="h-4 w-4 accent-[#1e725c]"
+                  />
+                  启用证据编排
+                </label>
+              </div>
+              {tenantInfo && !tenantInfo.features.evidence_allowed && (
+                <p className="mt-3 text-xs text-amber-700">当前套餐不支持 Evidence，请升级到 Pro 套餐。</p>
+              )}
+              {evidenceEnabled && (
+                <label className="mt-4 flex max-w-[280px] items-center gap-3 text-sm font-semibold text-ink">
+                  <span className="whitespace-nowrap text-xs text-muted">最大证据数</span>
+                  <Input type="number" min={1} max={20} value={evidenceMaxItems} onChange={(event) => setEvidenceMaxItems(event.target.value)} />
+                </label>
+              )}
+            </div>
+          </div>
         </div>
       </details>
 
@@ -614,8 +665,87 @@ export function RetrievePage() {
         </div>
       </Card>
 
+      <EvidencePackPanel result={result} isRunning={isRunning} requested={evidenceEnabled} />
+
       <RunSummary result={result} isRunning={isRunning} />
     </div>
+  );
+}
+
+function EvidencePackPanel({ result, isRunning, requested }: { result: RagRetrieveResponse | null; isRunning: boolean; requested: boolean }) {
+  const metadata = result?.metadata.evidence;
+  const pack = result?.evidence_pack;
+  const items = new Map(pack?.items.map((item) => [item.evidence_id, item]) ?? []);
+  const statusClass = pack?.status === "complete"
+    ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+    : pack?.status === "partial"
+      ? "border-amber-200 bg-amber-50 text-amber-700"
+      : "border-red-200 bg-red-50 text-danger";
+
+  return (
+    <Card>
+      <div className="flex items-start gap-3 border-b border-line px-5 py-5 sm:px-6">
+        <div className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-moss/10 text-moss"><BookOpenCheck size={17} /></div>
+        <div>
+          <h2 className="text-base font-bold">证据包</h2>
+          <p className="mt-1 text-xs text-muted">按问题要点展示可信原文和引用角色。</p>
+        </div>
+      </div>
+      <div className="px-5 py-5 sm:px-6">
+        {isRunning && requested ? (
+          <p className="text-sm text-muted">正在编排证据...</p>
+        ) : !result ? (
+          <p className="text-sm text-muted">启用 Evidence 并执行检索后显示。</p>
+        ) : metadata?.degraded ? (
+          <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">证据编排已降级：{metadata.error ?? "未知错误"}。原始检索结果不受影响。</div>
+        ) : !pack ? (
+          <p className="text-sm text-muted">{metadata ? (metadata.enabled ? "本次未生成证据包。" : "本次未启用证据编排。") : "该响应未包含 Evidence 字段，已按旧响应兼容。"}</p>
+        ) : (
+          <div className="space-y-4">
+            <div className="flex flex-wrap items-center gap-2 text-xs text-muted">
+              <Badge className={statusClass}>{pack.status}</Badge>
+              <span>候选 {metadata?.candidate_count ?? "—"} 条</span>
+              <span>证据 {metadata?.evidence_count ?? pack.items.length} 条</span>
+              <span>正文 {metadata?.output_chars ?? "—"} 字符</span>
+              <span>耗时 {metadata?.latency_ms ?? 0}ms</span>
+              {metadata?.context_sources_included && <Badge>含 context source</Badge>}
+              {metadata?.budget_exceeded && <Badge className="border-amber-200 bg-amber-50 text-amber-700">字符预算已满</Badge>}
+            </div>
+            {pack.missing_aspects.length > 0 && (
+              <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-800">缺失要点：{pack.missing_aspects.join("、")}</div>
+            )}
+            {pack.groups.map((group) => (
+              <section key={group.aspect} className="rounded-xl border border-line bg-paper/50 p-4">
+                <div className="flex items-center justify-between gap-3">
+                  <h3 className="text-sm font-bold text-ink">{group.aspect}</h3>
+                  <Badge className={group.covered ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-amber-200 bg-amber-50 text-amber-700"}>{group.covered ? "covered" : "missing"}</Badge>
+                </div>
+                <div className="mt-3 space-y-3">
+                  {group.evidence.length === 0 ? <p className="text-xs text-muted">没有可用核心证据。</p> : group.evidence.map((reference) => {
+                    const item = items.get(reference.evidence_id);
+                    if (!item) return null;
+                    return (
+                      <article key={`${group.aspect}-${reference.evidence_id}`} className="rounded-xl border border-line bg-white p-4">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <Badge className="border-moss/20 bg-moss/8 text-moss">{item.evidence_id}</Badge>
+                          <Badge>{reference.role}</Badge>
+                          <Badge>{item.retrieved_rank ? `TopK #${item.retrieved_rank}` : "TopK 外 / Context"}</Badge>
+                          <span className="text-[11px] text-muted">{item.source}</span>
+                        </div>
+                        <p className="mt-3 text-sm font-bold text-ink">{item.title}</p>
+                        {item.heading_path && <p className="mt-1 text-xs text-muted">{item.heading_path}</p>}
+                        <div className="mt-3 border-t border-line pt-3"><MarkdownContent content={item.content} /></div>
+                        <code className="mt-3 block break-all font-mono text-[10px] text-muted">{item.kb_id} / {item.index_version} / {item.chunk_id}</code>
+                      </article>
+                    );
+                  })}
+                </div>
+              </section>
+            ))}
+          </div>
+        )}
+      </div>
+    </Card>
   );
 }
 

@@ -8,6 +8,8 @@ from app.schemas.rerank import RerankOptions
 
 QueryRewriteStrategy = Literal["noop", "rewrite"]
 RetrieveProfile = Literal["speed", "balanced", "quality", "custom"]
+EvidenceRole = Literal["core", "supporting"]
+EvidenceStatus = Literal["complete", "partial", "missing"]
 MULTI_KB_MAX = 5
 EmptyReason = Literal["no_indexed_chunks", "no_chunks_matched"]
 
@@ -16,6 +18,11 @@ class QueryOptions(BaseModel):
     enabled: bool | None = None
     strategy: QueryRewriteStrategy | None = None
     synonym_enabled: bool | None = None
+
+
+class EvidenceOptions(BaseModel):
+    enabled: bool | None = None
+    max_items: int | None = Field(default=None, ge=1, le=20)
 
 
 class RagRetrieveRequest(BaseModel):
@@ -32,6 +39,7 @@ class RagRetrieveRequest(BaseModel):
     retrieval_options: RetrievalOptions | None = None
     rerank_options: RerankOptions | None = None
     query_options: QueryOptions | None = None
+    evidence_options: EvidenceOptions | None = None
     index_version: str | None = Field(default=None, min_length=1, max_length=32)
     observability_enabled: bool | None = None
 
@@ -92,6 +100,52 @@ class RetrievedChunk(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class EvidenceItem(BaseModel):
+    evidence_id: str
+    chunk_id: str
+    kb_id: str
+    document_id: str
+    title: str
+    heading_path: str | None = None
+    index_version: str
+    content: str
+    source: str
+    retrieved_rank: int | None = None
+
+
+class EvidenceGroupItem(BaseModel):
+    evidence_id: str
+    role: EvidenceRole
+
+
+class EvidenceGroup(BaseModel):
+    aspect: str
+    evidence: list[EvidenceGroupItem] = Field(default_factory=list)
+    covered: bool
+
+
+class EvidencePack(BaseModel):
+    status: EvidenceStatus
+    missing_aspects: list[str] = Field(default_factory=list)
+    groups: list[EvidenceGroup] = Field(default_factory=list)
+    items: list[EvidenceItem] = Field(default_factory=list)
+
+
+class RetrieveEvidenceMetadata(BaseModel):
+    enabled: bool = False
+    executed: bool = False
+    candidate_count: int = 0
+    evidence_count: int = 0
+    output_chars: int = 0
+    budget_exceeded: bool = False
+    context_sources_included: bool = False
+    status: EvidenceStatus | None = None
+    latency_ms: int = 0
+    degraded: bool = False
+    error: str | None = None
+    model_call: dict[str, Any] | None = None
+
+
 class RetrievalMetadata(TypedDict, total=False):
     mode: str
     fusion: str
@@ -140,6 +194,7 @@ class RetrieveMetadata(TypedDict, total=False):
     index_versions: dict[str, str]
     graph_injection: dict[str, Any]
     context_expansion: dict[str, Any]
+    evidence: dict[str, Any]
 
 
 class RagRetrieveResponse(BaseModel):
@@ -147,6 +202,7 @@ class RagRetrieveResponse(BaseModel):
     kb_id: str
     kb_ids: list[str] = Field(default_factory=list)
     retrieved_chunks: list[RetrievedChunk]
+    evidence_pack: EvidencePack | None = None
     metadata: RetrieveMetadata
 
     @model_validator(mode="after")

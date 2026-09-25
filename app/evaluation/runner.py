@@ -77,7 +77,13 @@ class HttpRetrievalClient:
             raise EvaluationRunError("retrieve response has no data object")
         return data
 
-    async def check_access(self, kb_ids: list[str], tenant_id: str | None) -> None:
+    async def check_access(
+        self,
+        kb_ids: list[str],
+        tenant_id: str | None,
+        *,
+        require_evidence: bool = False,
+    ) -> None:
         """Fail before paid evaluation calls when auth, plan, or corpus access is invalid."""
         try:
             response = await self._client.get("/api/v1/auth/me")
@@ -90,6 +96,8 @@ class HttpRetrievalClient:
             features = data.get("features") or {}
             if not features.get("hybrid_allowed") or not features.get("rerank_allowed"):
                 raise EvaluationRunError("evaluation tenant plan must allow hybrid and rerank")
+            if require_evidence and not features.get("evidence_allowed"):
+                raise EvaluationRunError("evaluation tenant plan must allow Evidence")
             for kb_id in kb_ids:
                 response = await self._client.get(f"/api/v1/knowledge-bases/{kb_id}")
                 body = response.json()
@@ -503,6 +511,7 @@ def normalize_effective_config(metadata: dict[str, Any]) -> dict[str, Any]:
         "rerank_enabled": tenant_policy.get("effective_rerank"),
         "rerank_top_n": rerank.get("top_n"),
         "rewrite_enabled": tenant_policy.get("effective_query_rewrite"),
+        "evidence_enabled": tenant_policy.get("effective_evidence"),
         "synonym_enabled": query.get("synonym_enabled"),
         "plan": tenant_policy.get("plan"),
         "index_version": metadata.get("index_version"),
@@ -530,6 +539,7 @@ def collect_degradation(metadata: dict[str, Any]) -> list[dict[str, Any]]:
         "rerank",
         "graph_injection",
         "context_expansion",
+        "evidence",
     ):
         value = metadata.get(stage)
         if isinstance(value, Mapping) and value.get("degraded"):

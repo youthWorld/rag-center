@@ -77,6 +77,7 @@ export type AuthMeData = {
     hybrid_allowed: boolean;
     rerank_allowed: boolean;
     query_rewrite_allowed: boolean;
+    evidence_allowed?: boolean;
   };
   limits: {
     retrieve_qps: number;
@@ -141,6 +142,61 @@ export type RerankOptions = {
   top_n?: number;
 };
 
+export type EvidenceOptions = {
+  enabled?: boolean;
+  max_items?: number;
+};
+
+export type EvidenceRole = "core" | "supporting";
+export type EvidenceStatus = "complete" | "partial" | "missing";
+
+export type EvidenceItem = {
+  evidence_id: string;
+  chunk_id: string;
+  kb_id: string;
+  document_id: string;
+  title: string;
+  heading_path?: string | null;
+  index_version: string;
+  content: string;
+  source: string;
+  retrieved_rank?: number | null;
+};
+
+export type EvidencePack = {
+  status: EvidenceStatus;
+  missing_aspects: string[];
+  groups: Array<{
+    aspect: string;
+    covered: boolean;
+    evidence: Array<{ evidence_id: string; role: EvidenceRole }>;
+  }>;
+  items: EvidenceItem[];
+};
+
+export type EvidenceMetadata = {
+  enabled?: boolean;
+  executed?: boolean;
+  candidate_count?: number;
+  evidence_count?: number;
+  output_chars?: number;
+  budget_exceeded?: boolean;
+  context_sources_included?: boolean;
+  status?: EvidenceStatus | null;
+  latency_ms?: number;
+  degraded?: boolean;
+  error?: string | null;
+  model_call?: {
+    provider?: string | null;
+    request_model?: string | null;
+    response_model?: string | null;
+    input_tokens?: number | null;
+    output_tokens?: number | null;
+    total_tokens?: number | null;
+    [key: string]: unknown;
+  } | null;
+};
+
 export type QueryProcessingMetadata = {
   raw_query: string;
   effective_query: string;
@@ -193,6 +249,7 @@ export type RetrievalMetadata = {
   index_versions?: Record<string, string>;
   graph_injection?: {executed?: boolean; graph_injected_count?: number; graph_selected_count?: number; latency_ms?: number; degraded?: boolean; error?: string | null};
   context_expansion?: {executed?: boolean; supplemental_chunk_count?: number; latency_ms?: number; degraded?: boolean; error?: string | null};
+  evidence?: EvidenceMetadata;
   retrieval?: {
     mode?: RetrievalMode;
     multi_kb?: boolean;
@@ -227,6 +284,7 @@ export type RetrievalMetadata = {
     effective_mode?: RetrievalMode;
     effective_rerank?: boolean;
     effective_query_rewrite?: boolean;
+    effective_evidence?: boolean;
   };
   [key: string]: unknown;
 };
@@ -236,6 +294,7 @@ export type RagRetrieveResponse = {
   kb_id: string;
   kb_ids?: string[];
   retrieved_chunks: RetrievedChunk[];
+  evidence_pack?: EvidencePack | null;
   metadata: RetrievalMetadata;
 };
 

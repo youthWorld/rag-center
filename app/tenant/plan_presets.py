@@ -10,6 +10,7 @@ PLAN_PRESETS: dict[str, dict[str, Any]] = {
             "hybrid_allowed": False,
             "rerank_allowed": False,
             "query_rewrite_allowed": False,
+            "evidence_allowed": False,
         },
         "limits": {
             "retrieve_qps": 3,
@@ -26,6 +27,7 @@ PLAN_PRESETS: dict[str, dict[str, Any]] = {
             "hybrid_allowed": True,
             "rerank_allowed": False,
             "query_rewrite_allowed": False,
+            "evidence_allowed": False,
         },
         "limits": {
             "retrieve_qps": 10,
@@ -42,6 +44,7 @@ PLAN_PRESETS: dict[str, dict[str, Any]] = {
             "hybrid_allowed": True,
             "rerank_allowed": True,
             "query_rewrite_allowed": True,
+            "evidence_allowed": True,
         },
         "limits": {
             "retrieve_qps": 50,
