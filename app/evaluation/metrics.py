@@ -60,11 +60,7 @@ class RagasQualityScorer:
 
             settings = Settings()
             api_key, base_url = _judge_credentials(settings)
-            model = (
-                os.getenv("RAGAS_LLM_MODEL")
-                or os.getenv("EVAL_MODEL")
-                or settings.llm_model
-            )
+            model = os.getenv("RAGAS_LLM_MODEL") or os.getenv("EVAL_MODEL") or settings.llm_model
             self.metadata.update(
                 {
                     "model": model,
@@ -82,9 +78,7 @@ class RagasQualityScorer:
                     {
                         "user_input": row["question"],
                         "reference": row["ground_truth"],
-                        "retrieved_contexts": [
-                            context["content"] for context in row["contexts"]
-                        ],
+                        "retrieved_contexts": [context["content"] for context in row["contexts"]],
                     }
                     for row in rows
                 ]
@@ -104,9 +98,7 @@ class RagasQualityScorer:
             )
             records = _result_records(result)
             if len(records) != len(rows):
-                raise RuntimeError(
-                    f"RAGAS returned {len(records)} rows for {len(rows)} cases"
-                )
+                raise RuntimeError(f"RAGAS returned {len(records)} rows for {len(rows)} cases")
             return {
                 row["case_id"]: _normalize_quality_record(record)
                 for row, record in zip(rows, records, strict=True)
@@ -145,9 +137,7 @@ def build_group_metrics(
     formal_rows = [row for row in rows if not row.get("warmup", False)]
     successful_rows = [row for row in formal_rows if row.get("error") is None]
     latencies = [
-        float(row["latency_ms"])
-        for row in successful_rows
-        if _finite_number(row.get("latency_ms"))
+        float(row["latency_ms"]) for row in successful_rows if _finite_number(row.get("latency_ms"))
     ]
     model_calls = [
         float(row["application_model_calls"])
@@ -159,9 +149,7 @@ def build_group_metrics(
     quality_values: dict[str, list[float]] = defaultdict(list)
     for row in formal_rows:
         score = quality_scores.get(row["case_id"], {})
-        case_metrics = {
-            metric: _finite_or_none(score.get(metric)) for metric in QUALITY_METRICS
-        }
+        case_metrics = {metric: _finite_or_none(score.get(metric)) for metric in QUALITY_METRICS}
         if row.get("error") is None:
             for metric, value in case_metrics.items():
                 if value is not None:
@@ -181,12 +169,8 @@ def build_group_metrics(
         "case_count": len(formal_rows),
         "successful_cases": len(successful_rows),
         "failed_cases": len(formal_rows) - len(successful_rows),
-        "quality": {
-            metric: _mean_or_none(quality_values[metric]) for metric in QUALITY_METRICS
-        },
-        "quality_coverage": {
-            metric: len(quality_values[metric]) for metric in QUALITY_METRICS
-        },
+        "quality": {metric: _mean_or_none(quality_values[metric]) for metric in QUALITY_METRICS},
+        "quality_coverage": {metric: len(quality_values[metric]) for metric in QUALITY_METRICS},
         "runtime": {
             "latency_count": len(latencies),
             "mean_latency_ms": _mean_or_none(latencies),
@@ -201,9 +185,7 @@ def build_group_metrics(
             "effective_config_mismatch_count": sum(
                 bool(row.get("effective_config_mismatches")) for row in successful_rows
             ),
-            "degraded_case_count": sum(
-                bool(row.get("degradation")) for row in successful_rows
-            ),
+            "degraded_case_count": sum(bool(row.get("degradation")) for row in successful_rows),
         },
         "cases": cases,
     }
@@ -274,6 +256,7 @@ def score_run(
     run_dir: Path,
     *,
     scorer: QualityScorer | None = None,
+    missing_only: bool = False,
 ) -> dict[str, Any]:
     manifest = _read_json(run_dir / "manifest.json")
     experiment = _read_json(run_dir / "experiment.snapshot.json")
@@ -287,7 +270,18 @@ def score_run(
     for group_name in ("baseline", "candidate"):
         rows = read_jsonl(run_dir / f"{group_name}.raw.jsonl")
         successful_rows = [row for row in rows if row.get("error") is None]
-        scores = scorer.score(successful_rows)
+        score_path = run_dir / f"{group_name}.scores.json"
+        previous = _read_json(score_path) if missing_only and score_path.exists() else {}
+        pending = [
+            row
+            for row in successful_rows
+            if not all(
+                previous.get(row["case_id"], {}).get(metric) is not None
+                for metric in QUALITY_METRICS
+            )
+        ]
+        scores = {**previous, **scorer.score(pending if missing_only else successful_rows)}
+        write_json(score_path, scores)
         metrics = build_group_metrics(rows, scores)
         group_metrics[group_name] = metrics
         write_json(run_dir / f"{group_name}.metrics.json", metrics)
@@ -343,12 +337,8 @@ def _comparison_group_summary(metrics: dict[str, Any]) -> dict[str, Any]:
         "p50_latency_ms": metrics["runtime"]["p50_latency_ms"],
         "p95_latency_ms": metrics["runtime"]["p95_latency_ms"],
         "max_latency_ms": metrics["runtime"]["max_latency_ms"],
-        "average_application_model_calls": metrics["runtime"][
-            "average_application_model_calls"
-        ],
-        "application_model_calls_count": metrics["runtime"][
-            "application_model_calls_count"
-        ],
+        "average_application_model_calls": metrics["runtime"]["average_application_model_calls"],
+        "application_model_calls_count": metrics["runtime"]["application_model_calls_count"],
     }
 
 
@@ -387,23 +377,13 @@ def _evaluate_checks(
     primary_delta = delta[primary_metric]
     min_improvement = decision["min_primary_improvement"]
     guardrails = {
-        metric: (
-            delta.get(metric) is not None
-            and delta[metric] >= config["min_delta"]
-        )
+        metric: (delta.get(metric) is not None and delta[metric] >= config["min_delta"])
         for metric, config in decision["quality_guardrails"].items()
     }
-    primary_negative = (
-        primary_delta is not None
-        and (
-            primary_delta <= -min_improvement
-            if min_improvement > 0
-            else primary_delta < 0
-        )
+    primary_negative = primary_delta is not None and (
+        primary_delta <= -min_improvement if min_improvement > 0 else primary_delta < 0
     )
-    primary_threshold_passed = (
-        primary_delta is not None and primary_delta >= min_improvement
-    )
+    primary_threshold_passed = primary_delta is not None and primary_delta >= min_improvement
     quality_positive = any(
         delta.get(metric) is not None and delta[metric] > 0
         for metric in {primary_metric, *decision["quality_guardrails"].keys()}
@@ -411,13 +391,9 @@ def _evaluate_checks(
     p95_ratio = delta["p95_increase_ratio"]
     model_call_delta = delta["average_application_model_calls"]
     cost_limits = decision["cost_limits"]
-    p95_cost_passed = (
-        p95_ratio is not None
-        and p95_ratio <= cost_limits["max_p95_increase_ratio"]
-    )
+    p95_cost_passed = p95_ratio is not None and p95_ratio <= cost_limits["max_p95_increase_ratio"]
     model_call_cost_passed = (
-        model_call_delta is not None
-        and model_call_delta <= cost_limits["max_model_calls_increase"]
+        model_call_delta is not None and model_call_delta <= cost_limits["max_model_calls_increase"]
     )
     return (
         {
@@ -484,9 +460,7 @@ def _normalize_quality_record(record: dict[str, Any]) -> dict[str, Any]:
     values = {metric: _finite_or_none(record.get(metric)) for metric in QUALITY_METRICS}
     missing = [metric for metric, value in values.items() if value is None]
     values["error"] = (
-        {"type": "ScoreUnavailable", "message": f"missing scores: {missing}"}
-        if missing
-        else None
+        {"type": "ScoreUnavailable", "message": f"missing scores: {missing}"} if missing else None
     )
     return values
 

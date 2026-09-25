@@ -22,6 +22,11 @@ class ChunkRepository:
                     document_id=chunk["document_id"],
                     title=chunk["title"],
                     content=chunk["content"],
+                    index_version=str(chunk.get("index_version") or "v1"),
+                    retrieval_text=chunk.get("retrieval_text"),
+                    section_id=chunk.get("section_id"),
+                    parent_section_id=chunk.get("parent_section_id"),
+                    order_index=chunk.get("order_index"),
                     chunk_metadata=chunk.get("metadata", {}),
                     embedding=chunk["embedding"],
                 )
@@ -37,6 +42,7 @@ class ChunkRepository:
         tenant_id: str,
         kb_id: str,
         top_k: int,
+        index_version: str | None = None,
     ) -> list[tuple[Chunk, float]]:
         distance = Chunk.embedding.cosine_distance(query_vector)
         statement = (
@@ -50,9 +56,16 @@ class ChunkRepository:
             .order_by(distance)
             .limit(top_k)
         )
+        if index_version is not None:
+            statement = statement.where(Chunk.index_version == index_version)
         result = await self.session.execute(statement)
         return [(chunk, float(score)) for chunk, score in result.all()]
 
-    async def delete_by_document_id(self, document_id: str) -> None:
-        await self.session.execute(delete(Chunk).where(Chunk.document_id == document_id))
+    async def delete_by_document_id(
+        self, document_id: str, *, index_version: str | None = None
+    ) -> None:
+        statement = delete(Chunk).where(Chunk.document_id == document_id)
+        if index_version is not None:
+            statement = statement.where(Chunk.index_version == index_version)
+        await self.session.execute(statement)
         await self.session.flush()

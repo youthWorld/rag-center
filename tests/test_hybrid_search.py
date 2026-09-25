@@ -321,9 +321,10 @@ async def test_rag_service_runs_vector_and_bm25_in_hybrid_mode() -> None:
         "vector_top_k": 2,
         "bm25_top_k": 2,
         "vector_count": 2,
-        "bm25_count": 2,
-        "fused_count": 3,
-    }
+            "bm25_count": 2,
+            "fused_count": 3,
+            "graph_selected_count": 0,
+        }
     assert isinstance(response.metadata["latency_ms"], int)
 
 

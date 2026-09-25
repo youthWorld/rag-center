@@ -80,21 +80,34 @@ class HybridSearchService:
             else:
                 source = "bm25"
 
-            fused.append(
-                HybridSearchChunk(
-                    document_id=chunk["document_id"],
-                    chunk_id=chunk["chunk_id"],
-                    title=chunk["title"],
-                    content=chunk["content"],
-                    score=fused_score,
-                    vector_score=chunk["vector_score"],
-                    bm25_score=chunk["bm25_score"],
-                    vector_rank=vector_rank,
-                    bm25_rank=bm25_rank,
-                    retrieval_source=source,
-                    metadata=chunk["metadata"],
-                ).model_dump()
-            )
+            item = HybridSearchChunk(
+                document_id=chunk["document_id"],
+                chunk_id=chunk["chunk_id"],
+                title=chunk["title"],
+                content=chunk["content"],
+                score=fused_score,
+                vector_score=chunk["vector_score"],
+                bm25_score=chunk["bm25_score"],
+                vector_rank=vector_rank,
+                bm25_rank=bm25_rank,
+                retrieval_source=source,
+                index_version=chunk.get("index_version"),
+                retrieval_text=chunk.get("retrieval_text"),
+                section_id=chunk.get("section_id"),
+                parent_section_id=chunk.get("parent_section_id"),
+                order_index=chunk.get("order_index"),
+                metadata=chunk["metadata"],
+            ).model_dump()
+            for optional_field in (
+                "index_version",
+                "retrieval_text",
+                "section_id",
+                "parent_section_id",
+                "order_index",
+            ):
+                if item.get(optional_field) is None:
+                    item.pop(optional_field, None)
+            fused.append(item)
 
         fused.sort(key=self._sort_key)
         return fused if top_n is None else fused[:top_n]
@@ -123,6 +136,11 @@ class HybridSearchService:
                     "vector_rank": None,
                     "bm25_rank": None,
                     "metadata": dict(chunk.get("metadata") or {}),
+                    "index_version": chunk.get("index_version"),
+                    "retrieval_text": chunk.get("retrieval_text"),
+                    "section_id": chunk.get("section_id"),
+                    "parent_section_id": chunk.get("parent_section_id"),
+                    "order_index": chunk.get("order_index"),
                 },
             )
             if not record["document_id"] and chunk.get("document_id") is not None:
@@ -136,14 +154,10 @@ class HybridSearchService:
 
             if source == "vector" and record["vector_rank"] is None:
                 record["vector_rank"] = rank
-                record["vector_score"] = self._score(
-                    chunk.get("vector_score", chunk.get("score"))
-                )
+                record["vector_score"] = self._score(chunk.get("vector_score", chunk.get("score")))
             elif source == "bm25" and record["bm25_rank"] is None:
                 record["bm25_rank"] = rank
-                record["bm25_score"] = self._score(
-                    chunk.get("bm25_score", chunk.get("score"))
-                )
+                record["bm25_score"] = self._score(chunk.get("bm25_score", chunk.get("score")))
 
     @staticmethod
     def _score(value: Any) -> float:
@@ -153,7 +167,7 @@ class HybridSearchService:
     def _sort_key(chunk: dict[str, Any]) -> tuple[float, int, int, str]:
         return (
             -float(chunk["score"]),
-            chunk["vector_rank"] or 10**9,
-            chunk["bm25_rank"] or 10**9,
+            chunk.get("vector_rank") or 10**9,
+            chunk.get("bm25_rank") or 10**9,
             chunk["chunk_id"],
         )

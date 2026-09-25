@@ -15,6 +15,7 @@
   "warmup_cases": 0,
   "timeout_seconds": 120,
   "baseline": {
+    "index_version": "v2",
     "profile": "custom",
     "top_k": 20,
     "retrieval_options": {
@@ -36,6 +37,7 @@
     "offline_reranker": "llm"
   },
   "candidate": {
+    "index_version": "v2",
     "profile": "custom",
     "top_k": 20,
     "retrieval_options": {

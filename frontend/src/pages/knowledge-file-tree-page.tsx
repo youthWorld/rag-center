@@ -357,6 +357,11 @@ export function KnowledgeFileTreePage() {
 
                   {knowledgeBaseExpanded && (
                     <div className="pb-4 pl-5 pr-5 sm:pl-14 sm:pr-6">
+                      <IndexVersionPanel
+                        kbId={knowledgeBase.kb_id}
+                        documents={knowledgeBase.documents}
+                        onNotice={setNotice}
+                      />
                       {knowledgeBase.documents.length === 0 ? (
                         <div className="rounded-xl border border-dashed border-line bg-paper/60 px-4 py-5 text-xs text-muted">暂无文档</div>
                       ) : (
@@ -416,6 +421,112 @@ export function KnowledgeFileTreePage() {
         </div>
       )}
     </div>
+  );
+}
+
+function IndexVersionPanel({
+  kbId,
+  documents,
+  onNotice,
+}: {
+  kbId: string;
+  documents: KnowledgeBaseTreeDocument[];
+  onNotice: (message: string) => void;
+}) {
+  const queryClient = useQueryClient();
+  const versionsQuery = useQuery({
+    queryKey: ["index-versions", kbId],
+    queryFn: () => knowledgeBaseService.fetchIndexVersions(kbId),
+    refetchInterval: (query) =>
+      query.state.data?.versions.some((version) => version.status === "building") ? 3000 : false,
+  });
+  const refresh = async () => {
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: ["index-versions", kbId] }),
+      queryClient.invalidateQueries({ queryKey: ["knowledge-base-tree"] }),
+    ]);
+  };
+  const rebuild = useMutation({
+    mutationFn: () => knowledgeBaseService.rebuildIndexVersion(kbId),
+    onSuccess: async () => { await refresh(); onNotice("已提交 v2 重建任务"); },
+    onError: (error) => onNotice(getApiErrorMessage(error)),
+  });
+  const activate = useMutation({
+    mutationFn: (version: string) => knowledgeBaseService.activateIndexVersion(kbId, version),
+    onSuccess: async () => { await refresh(); onNotice("活动索引版本已切换"); },
+    onError: (error) => onNotice(getApiErrorMessage(error)),
+  });
+  const remove = useMutation({
+    mutationFn: (version: string) => knowledgeBaseService.deleteIndexVersion(kbId, version),
+    onSuccess: async () => { await refresh(); onNotice("索引版本已清理"); },
+    onError: (error) => onNotice(getApiErrorMessage(error)),
+  });
+  const versions = versionsQuery.data?.versions ?? [];
+  const building = versions.some((version) => version.status === "building");
+  const active = versionsQuery.data?.active_index_version ?? "v1";
+
+  return (
+    <section className="mb-4 rounded-xl border border-line bg-paper/45 p-3.5">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <p className="text-xs font-bold text-ink">索引版本</p>
+          <p className="mt-1 text-[11px] text-muted">当前默认：{active}；历史版本文档只读。</p>
+        </div>
+        <Button
+          type="button"
+          size="sm"
+          variant="secondary"
+          disabled={building || rebuild.isPending || active === "v2"}
+          onClick={() => rebuild.mutate()}
+        >
+          {rebuild.isPending || building ? <LoaderCircle size={14} className="animate-spin" /> : <RefreshCw size={14} />}
+          重建 v2
+        </Button>
+      </div>
+      {versionsQuery.isLoading ? (
+        <p className="mt-3 text-xs text-muted">正在读取版本...</p>
+      ) : versionsQuery.isError ? (
+        <p className="mt-3 text-xs text-danger">{getApiErrorMessage(versionsQuery.error)}</p>
+      ) : (
+        <div className="mt-3 grid gap-2 lg:grid-cols-2">
+          {versions.map((version) => (
+            <details key={version.version} className="rounded-lg border border-line bg-white p-3">
+              <summary className="cursor-pointer list-none [&::-webkit-details-marker]:hidden">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="flex items-center gap-2 text-xs font-bold">
+                    {version.version}
+                    <Badge>{version.status}</Badge>
+                    {version.version === active && <Badge className="border-moss/20 bg-moss/8 text-moss">默认</Badge>}
+                  </span>
+                  <span className="text-[11px] text-muted">{version.document_count} 文档 / {version.chunk_count} chunk</span>
+                </div>
+              </summary>
+              <div className="mt-3 border-t border-line pt-3 text-[11px] text-muted">
+                <p className="font-semibold text-ink/75">来源文档（只读）</p>
+                <p className="mt-1 line-clamp-2">{documents.map((document) => document.title).join("、") || "暂无文档"}</p>
+                {version.error_message && <p className="mt-2 text-danger">{version.error_message}</p>}
+                <div className="mt-3 flex gap-2">
+                  {version.status === "ready" && (
+                    <Button type="button" size="sm" onClick={() => activate.mutate(version.version)} disabled={activate.isPending}>激活</Button>
+                  )}
+                  {version.version !== active && version.status !== "building" && (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="danger"
+                      disabled={remove.isPending}
+                      onClick={() => {
+                        if (window.confirm("确认清理索引版本 " + version.version + "？")) remove.mutate(version.version);
+                      }}
+                    >清理</Button>
+                  )}
+                </div>
+              </div>
+            </details>
+          ))}
+        </div>
+      )}
+    </section>
   );
 }
 

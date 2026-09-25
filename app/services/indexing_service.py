@@ -3,20 +3,34 @@ from __future__ import annotations
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
-from app.core.exceptions import KnowledgeBaseNotFoundError, ServiceConfigurationError
+from app.core.error_codes import ErrorCode
+from app.core.exceptions import (
+    KnowledgeBaseNotFoundError,
+    ServiceConfigurationError,
+    raise_app_error,
+)
 from app.core.logging import get_logger
 from app.models.document import Document, DocumentStatus
+from app.models.index_version import IndexVersionStatus
 from app.providers.embedding.base import EmbeddingProvider
 from app.providers.keyword_search.base import KeywordSearchProvider
 from app.providers.parsers.base import DocumentParser, ParsedDocument
 from app.providers.parsers.registry import source_type_for_filename
 from app.providers.vectorstores.base import VectorStore
 from app.repositories.document_repository import DocumentRepository
+from app.repositories.index_version_repository import IndexVersionRepository
 from app.repositories.knowledge_base_repository import KnowledgeBaseRepository
 from app.schemas.document import DocumentUploadRequest
 from app.services.document_ingestion import prepare_document_content
+from app.services.reference_relation_service import ReferenceRelationService
 from app.utils.id_generator import generate_id
-from app.utils.markdown_splitter import MarkdownStructuredSplitter, SplitPiece
+from app.utils.markdown_splitter import (
+    MarkdownStructuredSplitter,
+    SplitPiece,
+    build_retrieval_text,
+    is_low_information_content,
+    stable_section_id,
+)
 from app.utils.text_splitter import TextSplitter
 
 
@@ -68,6 +82,7 @@ class IndexingService:
         )
         if knowledge_base is None:
             raise KnowledgeBaseNotFoundError(request.kb_id)
+        await self._ensure_not_building(tenant_id=tenant_id, kb_id=knowledge_base.id)
 
         document = await self.document_repository.create(
             tenant_id=tenant_id,
@@ -105,6 +120,7 @@ class IndexingService:
         )
         if knowledge_base is None:
             raise KnowledgeBaseNotFoundError(kb_id)
+        await self._ensure_not_building(tenant_id=tenant_id, kb_id=knowledge_base.id)
 
         document = await self.document_repository.create(
             tenant_id=tenant_id,
@@ -154,14 +170,32 @@ class IndexingService:
                 document.source_type = parsed_document.source_type
                 await self.session.commit()
 
-            chunk_count = await self.index_document(document, parsed_document=parsed_document)
+            get_kb = getattr(self.knowledge_base_repository, "get_by_id", None)
+            knowledge_base = (
+                await get_kb(kb_id=document.kb_id, tenant_id=document.tenant_id)
+                if callable(get_kb)
+                else None
+            )
+            chunk_count = await self.index_document(
+                document,
+                parsed_document=parsed_document,
+                index_version=getattr(knowledge_base, "active_index_version", "v1") or "v1",
+            )
             document.status = int(DocumentStatus.SUCCESS)
             document.error_message = None
             await self.session.commit()
+            relation_stats = await self._refresh_relations_if_needed(
+                tenant_id=document.tenant_id,
+                kb_id=document.kb_id,
+                index_version=getattr(knowledge_base, "active_index_version", "v1") or "v1",
+            )
             self.logger.info(
-                "BUSINESS_EVENT | event=document_indexed | document_id=%s | chunk_count=%s",
+                "BUSINESS_EVENT | event=document_indexed | document_id=%s | chunk_count=%s | "
+                "index_version=%s | relation_count=%s",
                 document.id,
                 chunk_count,
+                getattr(knowledge_base, "active_index_version", "v1") or "v1",
+                (relation_stats or {}).get("relation_count", 0),
             )
             return chunk_count
         except Exception as exc:
@@ -186,18 +220,29 @@ class IndexingService:
         await self.session.commit()
         return document
 
-    async def purge_document_chunks(self, document_id: str) -> None:
+    async def purge_document_chunks(
+        self, document_id: str, *, index_version: str | None = None
+    ) -> None:
         """Remove a document from pgvector first and Elasticsearch second."""
 
-        await self.vector_store.delete_by_document_id(document_id)
+        if index_version is None:
+            await self.vector_store.delete_by_document_id(document_id)
+        else:
+            await self.vector_store.delete_by_document_id(document_id, index_version=index_version)
         if self.keyword_search_provider is not None:
-            await self.keyword_search_provider.delete_by_document_id(document_id)
+            if index_version is None:
+                await self.keyword_search_provider.delete_by_document_id(document_id)
+            else:
+                await self.keyword_search_provider.delete_by_document_id(
+                    document_id, index_version=index_version
+                )
 
     async def index_document(
         self,
         document: Document,
         *,
         parsed_document: ParsedDocument | None = None,
+        index_version: str = "v1",
     ) -> int:
         """Chunk, embed, and persist one document's content.
 
@@ -216,11 +261,27 @@ class IndexingService:
             source_type=document.source_type or "text",
             metadata={"parser": "stored_content"},
         )
-        pieces = self._split_document_content(document, parsed.content, parsed.source_type)
+        pieces = self._split_document_content(
+            document,
+            parsed.content,
+            parsed.source_type,
+            index_version=index_version,
+        )
         if not pieces:
             raise ValueError("document content cannot be empty")
 
-        contents = [piece.text for piece in pieces]
+        contents = [
+            (
+                build_retrieval_text(
+                    document_title=document.title,
+                    heading_path=piece.metadata.get("heading_path"),
+                    content=piece.text,
+                )
+                if index_version != "v1"
+                else piece.text
+            )
+            for piece in pieces
+        ]
         embeddings = await self.embedding_provider.embed_documents(contents)
         if len(embeddings) != len(contents):
             raise ValueError("embedding provider returned an unexpected number of vectors")
@@ -234,20 +295,34 @@ class IndexingService:
                 "document_id": document.id,
                 "title": document.title,
                 "content": piece.text,
+                "index_version": index_version,
+                "retrieval_text": retrieval_text if index_version != "v1" else None,
+                "section_id": piece.metadata.get("section_id"),
+                "parent_section_id": piece.metadata.get("parent_section_id"),
+                "order_index": piece.metadata.get("order_index"),
                 "metadata": {
                     **parsed.metadata,
                     "chunk_index": index,
                     "source_type": source_type,
                     "heading_path": piece.metadata.get("heading_path"),
+                    "heading_level": piece.metadata.get("heading_level"),
                     "chunk_type": piece.metadata.get("chunk_type", "section"),
                     "table_part": piece.metadata.get("table_part"),
+                    "section_id": piece.metadata.get("section_id"),
+                    "parent_section_id": piece.metadata.get("parent_section_id"),
+                    "order_index": piece.metadata.get("order_index"),
+                    "reference_texts": piece.metadata.get("reference_texts", []),
                 },
                 "embedding": embedding,
             }
-            for index, (piece, embedding) in enumerate(
-                zip(pieces, embeddings, strict=True)
+            for index, (piece, retrieval_text, embedding) in enumerate(
+                zip(pieces, contents, embeddings, strict=True)
             )
         ]
+        for chunk in chunks:
+            chunk["metadata"] = {
+                key: value for key, value in chunk["metadata"].items() if value is not None
+            }
         await self.vector_store.add_chunks(chunks)
         if self.keyword_search_provider is not None:
             await self.keyword_search_provider.add_chunks(chunks)
@@ -263,7 +338,38 @@ class IndexingService:
         document: Document,
         content: str,
         source_type: str | None = None,
+        *,
+        index_version: str = "v1",
     ) -> list[SplitPiece]:
+        if index_version != "v1":
+            if self._is_markdown_document(document, source_type=source_type):
+                return self.markdown_splitter.split_contextual(
+                    content,
+                    document_id=document.id,
+                    index_version=index_version,
+                )
+            section_id = stable_section_id(
+                document_id=document.id,
+                index_version=index_version,
+                heading_path=None,
+            )
+            pieces = [
+                SplitPiece(
+                    text=piece,
+                    metadata={
+                        "chunk_type": "prose",
+                        "heading_path": None,
+                        "section_id": section_id,
+                        "parent_section_id": None,
+                        "reference_texts": [],
+                    },
+                )
+                for piece in self.splitter.split_text(content)
+                if not is_low_information_content(piece)
+            ]
+            for order_index, piece in enumerate(pieces):
+                piece.metadata["order_index"] = order_index
+            return pieces
         if self._is_markdown_document(document, source_type=source_type):
             return self.markdown_splitter.split(content)
         return [
@@ -291,16 +397,45 @@ class IndexingService:
         document.error_message = str(exception)[:2000]
         await self.session.commit()
 
+    async def _refresh_relations_if_needed(
+        self, *, tenant_id: str, kb_id: str, index_version: str
+    ) -> dict[str, int] | None:
+        if index_version == "v1" or self.session is None:
+            return None
+        try:
+            stats = await ReferenceRelationService(self.session).build_relations(
+                tenant_id=tenant_id,
+                kb_id=kb_id,
+                index_version=index_version,
+            )
+            await self.session.commit()
+            return stats
+        except Exception as exc:
+            await self.session.rollback()
+            self.logger.warning(
+                "BUSINESS_EVENT | event=reference_relation_refresh_degraded | "
+                "tenant_id=%s | kb_id=%s | index_version=%s | error=%s",
+                tenant_id,
+                kb_id,
+                index_version,
+                type(exc).__name__,
+            )
+            return None
+
     def _require_persistence(self) -> None:
         self._require_document_persistence()
         if self.knowledge_base_repository is None:
             raise RuntimeError("IndexingService knowledge base dependency is not configured")
 
+    async def _ensure_not_building(self, *, tenant_id: str, kb_id: str) -> None:
+        if self.session is None:
+            return
+        versions = await IndexVersionRepository(self.session).list(tenant_id=tenant_id, kb_id=kb_id)
+        if any(item.status == IndexVersionStatus.BUILDING for item in versions):
+            raise_app_error(ErrorCode.SYSTEM_BUSY, "index rebuild is in progress")
+
     def _require_document_persistence(self) -> None:
-        if (
-            self.session is None
-            or self.document_repository is None
-        ):
+        if self.session is None or self.document_repository is None:
             raise RuntimeError("IndexingService persistence dependencies are not configured")
 
 
@@ -312,8 +447,7 @@ def build_indexing_service(session: AsyncSession, app_settings: Settings) -> Ind
     if app_settings.keyword_search_provider != "elasticsearch":
         raise ServiceConfigurationError(
             internal_message=(
-                "unsupported KEYWORD_SEARCH_PROVIDER: "
-                f"{app_settings.keyword_search_provider}"
+                f"unsupported KEYWORD_SEARCH_PROVIDER: {app_settings.keyword_search_provider}"
             ),
             context={"provider": app_settings.keyword_search_provider},
         )

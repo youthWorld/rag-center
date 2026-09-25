@@ -32,6 +32,7 @@ class RagRetrieveRequest(BaseModel):
     retrieval_options: RetrievalOptions | None = None
     rerank_options: RerankOptions | None = None
     query_options: QueryOptions | None = None
+    index_version: str | None = Field(default=None, min_length=1, max_length=32)
     observability_enabled: bool | None = None
 
     @field_validator("kb_id", "user_id")
@@ -83,6 +84,11 @@ class RetrievedChunk(BaseModel):
     bm25_rank: int | None = Field(default=None, ge=1)
     retrieval_source: RetrievalSource = "vector"
     rerank_score: float | None = None
+    index_version: str | None = None
+    section_id: str | None = None
+    parent_section_id: str | None = None
+    order_index: int | None = None
+    context: dict[str, Any] | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -106,6 +112,16 @@ class RetrievalMetadata(TypedDict, total=False):
     partial_kb_success: bool
     per_kb_metadata: dict[str, dict[str, Any]]
     empty_reason: EmptyReason
+    index_version: str
+    candidate_count_before_filter: int
+    candidate_count_after_filter: int
+    filtered_count: int
+    filtered_reasons: dict[str, int]
+    graph_injection_executed: bool
+    graph_injected_count: int
+    graph_selected_count: int
+    graph_injection_latency_ms: int
+    context_expansion: dict[str, Any]
 
 
 class RetrieveMetadata(TypedDict, total=False):
@@ -120,6 +136,10 @@ class RetrieveMetadata(TypedDict, total=False):
     tenant_policy: dict[str, Any]
     application_model_calls: int
     application_model_call_details: dict[str, int]
+    index_version: str
+    index_versions: dict[str, str]
+    graph_injection: dict[str, Any]
+    context_expansion: dict[str, Any]
 
 
 class RagRetrieveResponse(BaseModel):

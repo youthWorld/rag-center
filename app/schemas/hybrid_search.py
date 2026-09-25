@@ -3,7 +3,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 RetrievalMode = Literal["vector", "bm25", "hybrid"]
-RetrievalSource = Literal["vector", "bm25", "hybrid"]
+RetrievalSource = Literal["vector", "bm25", "hybrid", "graph"]
 
 
 class RetrievalOptions(BaseModel):
@@ -24,4 +24,9 @@ class HybridSearchChunk(BaseModel):
     vector_rank: int | None = Field(default=None, ge=1)
     bm25_rank: int | None = Field(default=None, ge=1)
     retrieval_source: RetrievalSource
+    index_version: str | None = None
+    retrieval_text: str | None = None
+    section_id: str | None = None
+    parent_section_id: str | None = None
+    order_index: int | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)

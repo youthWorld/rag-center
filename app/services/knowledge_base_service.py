@@ -7,7 +7,9 @@ from app.core.error_codes import ErrorCode
 from app.core.exceptions import KnowledgeBaseNotFoundError, raise_app_error
 from app.core.logging import get_logger
 from app.models.document import DocumentStatus
+from app.models.index_version import IndexVersionStatus
 from app.repositories.document_repository import DocumentRepository
+from app.repositories.index_version_repository import IndexVersionRepository
 from app.repositories.knowledge_base_repository import KnowledgeBaseRepository
 from app.schemas.knowledge_base import (
     KnowledgeBaseCreateRequest,
@@ -42,9 +44,7 @@ class KnowledgeBaseService:
         self.indexing_service = indexing_service
         self.plan_resolver = plan_resolver or PlanResolver()
         self.quota_service = quota_service
-        self.document_storage = DocumentStorage(
-            (app_settings or settings).document_storage_path
-        )
+        self.document_storage = DocumentStorage((app_settings or settings).document_storage_path)
         self.logger = get_logger(__name__)
 
     async def create(
@@ -61,6 +61,12 @@ class KnowledgeBaseService:
             name=request.name,
             description=request.description,
         )
+        await IndexVersionRepository(self.session).create(
+            tenant_id=tenant_id,
+            kb_id=knowledge_base.id,
+            version="v1",
+            status=IndexVersionStatus.ACTIVE,
+        )
         await self.session.commit()
         await self.session.refresh(knowledge_base)
         self.logger.info(
@@ -73,6 +79,7 @@ class KnowledgeBaseService:
             name=knowledge_base.name,
             tenant_id=knowledge_base.tenant_id,
             created_at=knowledge_base.created_at,
+            active_index_version=getattr(knowledge_base, "active_index_version", "v1") or "v1",
         )
 
     async def get(self, kb_id: str, *, tenant_id: str) -> KnowledgeBaseDetailResponse:
@@ -137,6 +144,12 @@ class KnowledgeBaseService:
         if knowledge_base is None:
             raise KnowledgeBaseNotFoundError(kb_id)
         self._require_maintenance_dependencies()
+        if callable(getattr(self.session, "execute", None)):
+            versions = await IndexVersionRepository(self.session).list(
+                tenant_id=tenant_id, kb_id=kb_id
+            )
+            if any(item.status == "building" for item in versions):
+                raise_app_error(ErrorCode.SYSTEM_BUSY, "index rebuild is in progress")
 
         documents = await self.document_repository.list_by_kb_id(
             kb_id=kb_id,
@@ -149,8 +162,7 @@ class KnowledgeBaseService:
                 context={"kb_id": kb_id},
             )
         source_files = [
-            (document.id, getattr(document, "source_file_path", None))
-            for document in documents
+            (document.id, getattr(document, "source_file_path", None)) for document in documents
         ]
 
         try:
@@ -205,6 +217,9 @@ class KnowledgeBaseService:
                     name=knowledge_base.name,
                     description=knowledge_base.description,
                     created_at=knowledge_base.created_at,
+                    active_index_version=(
+                        getattr(knowledge_base, "active_index_version", "v1") or "v1"
+                    ),
                     documents=[],
                 )
                 knowledge_bases[knowledge_base_key] = tree_knowledge_base
@@ -244,6 +259,7 @@ class KnowledgeBaseService:
             ),
             created_at=knowledge_base.created_at,
             updated_at=knowledge_base.updated_at,
+            active_index_version=getattr(knowledge_base, "active_index_version", "v1") or "v1",
         )
 
     def _require_maintenance_dependencies(self) -> None:

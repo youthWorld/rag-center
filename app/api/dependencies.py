@@ -16,11 +16,13 @@ from app.providers.rerank.base import RerankProvider
 from app.providers.rerank.qwen37 import Qwen37RerankProvider
 from app.providers.vectorstores.pgvector import PgVectorStore
 from app.repositories.document_repository import DocumentRepository
+from app.repositories.index_version_repository import IndexVersionRepository
 from app.repositories.knowledge_base_repository import KnowledgeBaseRepository
 from app.repositories.retrieval_log_repository import RetrievalLogRepository
 from app.repositories.tenant_repository import TenantRepository
 from app.services.document_service import DocumentService
 from app.services.feedback_service import FeedbackService
+from app.services.index_version_service import IndexVersionService
 from app.services.indexing_service import IndexingService, build_indexing_service
 from app.services.knowledge_base_service import KnowledgeBaseService
 from app.services.quota_service import QuotaService
@@ -76,8 +78,7 @@ def get_keyword_search_provider(app_settings: Settings) -> KeywordSearchProvider
         return ElasticsearchKeywordSearchProvider(app_settings)
     raise ServiceConfigurationError(
         internal_message=(
-            "unsupported KEYWORD_SEARCH_PROVIDER: "
-            f"{app_settings.keyword_search_provider}"
+            f"unsupported KEYWORD_SEARCH_PROVIDER: {app_settings.keyword_search_provider}"
         ),
         context={"provider": app_settings.keyword_search_provider},
     )
@@ -105,6 +106,19 @@ def get_knowledge_base_service(
         plan_resolver=plan_resolver,
         quota_service=quota_service,
         app_settings=app_settings,
+    )
+
+
+def get_index_version_service(
+    session: AsyncSession = Depends(get_db),
+    indexing_service: IndexingService = Depends(get_indexing_service),
+) -> IndexVersionService:
+    return IndexVersionService(
+        session=session,
+        repository=IndexVersionRepository(session),
+        knowledge_base_repository=KnowledgeBaseRepository(session),
+        document_repository=DocumentRepository(session),
+        indexing_service=indexing_service,
     )
 
 

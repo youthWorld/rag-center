@@ -64,6 +64,11 @@ def generate_report(run_dir: Path) -> str:
         *_metric_table_rows(comparison),
         "",
         *(
+            _graph_diagnostics(baseline_rows, candidate_rows)
+            if experiment.get("experiment_id") == "context_graph_upgrade"
+            else []
+        ),
+        *(
             _rerank_diagnostics(experiment, dataset, baseline_rows, candidate_rows)
             if experiment.get("rerank_experiment") == "effect"
             else []
@@ -132,6 +137,26 @@ def write_report(run_dir: Path) -> Path:
     manifest["status"] = "reported"
     write_json(manifest_path, manifest)
     return report_path
+
+
+def _graph_diagnostics(
+    baseline_rows: list[dict[str, Any]], candidate_rows: list[dict[str, Any]]
+) -> list[str]:
+    graph_case_count = sum(
+        int(row.get("graph_injected_count") or 0) > 0 for row in candidate_rows
+    )
+    supplemental_case_count = sum(
+        int(row.get("supplemental_chunk_count") or 0) > 0 for row in candidate_rows
+    )
+    return [
+        "## 轻量图谱诊断（非正式验收指标）",
+        "",
+        f"- v1 检索题数：{len(baseline_rows)}；v2 检索题数：{len(candidate_rows)}。",
+        f"- v2 图谱新增候选的题数：{graph_case_count}。",
+        f"- v2 上下文补充的题数：{supplemental_case_count}。",
+        "- 本节仅辅助定位变化，启用结论仍以四项公共指标为准。",
+        "",
+    ]
 
 
 def _rerank_diagnostics(

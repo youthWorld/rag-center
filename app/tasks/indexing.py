@@ -12,7 +12,10 @@ from app.core.exceptions import AppError
 from app.db.session import session_factory
 from app.models.document import DocumentStatus
 from app.repositories.document_repository import DocumentRepository
+from app.repositories.index_version_repository import IndexVersionRepository
+from app.repositories.knowledge_base_repository import KnowledgeBaseRepository
 from app.services.indexing_service import build_indexing_service
+from app.services.reference_relation_service import ReferenceRelationService
 
 _ResultT = TypeVar("_ResultT")
 
@@ -32,6 +35,29 @@ def index_document_task(
     except Exception as exc:
         if _is_retryable(exc) and self.request.retries < self.max_retries:
             _run_async(_reset_document_for_retry(document_id))
+            raise self.retry(exc=exc) from exc
+        raise
+
+
+@celery_app.task(bind=True, max_retries=1, default_retry_delay=15)
+def rebuild_index_version_task(
+    self,
+    tenant_id: str,
+    kb_id: str,
+    version: str = "v2",
+) -> dict[str, Any]:
+    """Build a side-by-side KB index version without replacing active chunks."""
+
+    try:
+        return _run_async(
+            _rebuild_index_version(
+                tenant_id=tenant_id,
+                kb_id=kb_id,
+                version=version,
+            )
+        )
+    except Exception as exc:
+        if _is_retryable(exc) and self.request.retries < self.max_retries:
             raise self.retry(exc=exc) from exc
         raise
 
@@ -66,6 +92,92 @@ async def _reset_document_for_retry(document_id: str) -> None:
         document.status = int(DocumentStatus.PROCESSING)
         document.error_message = None
         await session.commit()
+
+
+async def _rebuild_index_version(*, tenant_id: str, kb_id: str, version: str) -> dict[str, Any]:
+    async with session_factory() as session:
+        service = build_indexing_service(session, settings)
+        version_repository = IndexVersionRepository(session)
+        document_repository = DocumentRepository(session)
+        kb_repository = KnowledgeBaseRepository(session)
+        item = await version_repository.get(
+            tenant_id=tenant_id,
+            kb_id=kb_id,
+            version=version,
+        )
+        if item is None:
+            raise LookupError("index version not found")
+        try:
+            knowledge_base = await kb_repository.get_by_id(
+                kb_id=kb_id,
+                tenant_id=tenant_id,
+            )
+            if knowledge_base is None:
+                raise LookupError("knowledge base not found")
+            documents = await document_repository.list_by_kb_id(
+                kb_id=kb_id,
+                tenant_id=tenant_id,
+            )
+            successful_documents = [
+                document for document in documents if document.status == int(DocumentStatus.SUCCESS)
+            ]
+            for document in successful_documents:
+                await service.purge_document_chunks(
+                    document.id,
+                    index_version=version,
+                )
+                await service.index_document(document, index_version=version)
+            relation_stats = await ReferenceRelationService(session).build_relations(
+                tenant_id=tenant_id,
+                kb_id=kb_id,
+                index_version=version,
+            )
+            document_count = len(successful_documents)
+            chunk_count = await version_repository.count_chunks(
+                tenant_id=tenant_id,
+                kb_id=kb_id,
+                version=version,
+            )
+            await version_repository.mark_ready(
+                item,
+                document_count=document_count,
+                chunk_count=chunk_count,
+            )
+            await session.commit()
+            return {
+                "tenant_id": tenant_id,
+                "kb_id": kb_id,
+                "index_version": version,
+                "status": "ready",
+                "document_count": document_count,
+                "chunk_count": chunk_count,
+                **relation_stats,
+            }
+        except Exception as exc:
+            await session.rollback()
+            try:
+                documents = await document_repository.list_by_kb_id(
+                    kb_id=kb_id, tenant_id=tenant_id
+                )
+                for document in documents:
+                    await service.purge_document_chunks(document.id, index_version=version)
+                await session.commit()
+            except Exception:
+                await session.rollback()
+                # Keep the version failed even if a remote index cannot be cleaned yet.
+            item = await version_repository.get(
+                tenant_id=tenant_id,
+                kb_id=kb_id,
+                version=version,
+            )
+            if item is not None:
+                await version_repository.mark_failed(item, str(exc))
+                await session.commit()
+            raise
+        finally:
+            close = getattr(service.keyword_search_provider, "close", None)
+            if close is not None:
+                await close()
 
 
 def _run_async(coro: Coroutine[Any, Any, _ResultT]) -> _ResultT:

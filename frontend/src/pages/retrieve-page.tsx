@@ -63,6 +63,7 @@ export function RetrievePage() {
   const [selectedKbIds, setSelectedKbIds] = useState<string[]>(() => (initialKbId ? [initialKbId] : []));
   const [query, setQuery] = useState("");
   const [profile, setProfile] = useState<RetrieveProfile>("balanced");
+  const [indexVersion, setIndexVersion] = useState("");
   const [topK, setTopK] = useState("5");
   const [mode, setMode] = useState<RetrievalMode>("hybrid");
   const [vectorTopK, setVectorTopK] = useState("20");
@@ -88,6 +89,11 @@ export function RetrievePage() {
   const knowledgeBaseTreeQuery = useQuery<KnowledgeBaseTenantTree[]>({
     queryKey: ["knowledge-base-tree"],
     queryFn: () => knowledgeBaseService.fetchTree(),
+  });
+  const versionQuery = useQuery({
+    queryKey: ["index-versions", selectedKbIds],
+    queryFn: () => knowledgeBaseService.fetchIndexVersions(selectedKbIds[0]),
+    enabled: selectedKbIds.length === 1,
   });
   const tenantInfo = authQuery.data;
   const knowledgeBases = useMemo(
@@ -127,6 +133,7 @@ export function RetrievePage() {
   }, [knowledgeBases]);
 
   const toggleKnowledgeBase = (kbId: string) => {
+    setIndexVersion("");
     setSelectedKbIds((current) =>
       current.includes(kbId) ? current.filter((currentId) => currentId !== kbId) : [...current, kbId],
     );
@@ -161,6 +168,7 @@ export function RetrievePage() {
       user_id: "debug_user",
       query: normalizedQuery,
       profile,
+      ...(indexVersion ? { index_version: indexVersion } : {}),
     };
 
     if (profile === "custom") {
@@ -378,6 +386,16 @@ export function RetrievePage() {
             {knowledgeBases.length > 0 && selectedKbIds.length === 0 && (
               <p className="mt-3 text-xs font-semibold text-danger">请选择至少一个知识库。</p>
             )}
+            <div className="mt-4 space-y-1 text-xs">
+              <label htmlFor="index-version" className="font-semibold text-ink">索引版本</label>
+              <select id="index-version" value={indexVersion} onChange={(event) => setIndexVersion(event.target.value)} className="block rounded-lg border border-line bg-white px-3 py-2">
+                <option value="">各知识库当前活动版本</option>
+                {selectedKbIds.length === 1 && versionQuery.data?.versions.filter((item) => ["ready", "active", "archived"].includes(item.status)).map((item) => (
+                  <option key={item.version} value={item.version}>{item.version}{item.version === versionQuery.data?.active_index_version ? "（当前默认）" : ""}</option>
+                ))}
+              </select>
+              {selectedKbIds.length !== 1 && <p className="text-muted">多库检索默认使用各库当前活动版本。</p>}
+            </div>
           </div>
 
           <div>
@@ -752,11 +770,18 @@ const retrievalSourceLabels: Record<RetrievedChunk["retrieval_source"], string> 
   vector: "语义召回",
   bm25: "关键词召回",
   hybrid: "混合召回",
+  graph: "关系注入",
+};
+
+const relationLabels: Record<string, string> = {
+  anchor: "原始命中", previous: "前一片段", next: "后一片段",
+  same_section: "同章节", parent_section: "父章节", reference: "明确引用",
 };
 
 function RetrievedChunkRow({ chunk, index }: { chunk: RetrievedChunk; index: number }) {
   const chunkType = getChunkTypeLabel(chunk.metadata?.chunk_type);
   const sourceLabel = chunk.kb_name || (chunk.kb_id ? chunk.kb_id.slice(0, 8) : "未知知识库");
+  const supplementalSources = chunk.context?.sources.filter((source) => source.relation !== "anchor") ?? [];
 
   return (
     <article className="overflow-hidden rounded-xl border border-line bg-white">
@@ -802,6 +827,28 @@ function RetrievedChunkRow({ chunk, index }: { chunk: RetrievedChunk; index: num
           <div className="mt-5 overflow-hidden rounded-xl bg-paper/65 px-4 py-4 sm:px-5 sm:py-5">
             <MarkdownContent content={chunk.content} chunkType={chunk.metadata?.chunk_type} />
           </div>
+          <details className="mt-4 rounded-xl border border-line p-4 text-xs">
+            <summary className="cursor-pointer font-semibold">
+              上下文补充 {supplementalSources.length ? "+" + supplementalSources.length : "（无补充）"}
+            </summary>
+            <div className="mt-3 space-y-3">
+              <p>索引版本：{chunk.index_version ?? "v1"}</p>
+              <p>章节 ID：{chunk.section_id ?? "—"} / 父章节：{chunk.parent_section_id ?? "—"} / 顺序：{chunk.order_index ?? "—"}</p>
+              {chunk.retrieval_source === "graph" && <p>注入来源：{String(chunk.metadata?.injection_source ?? "关系")}</p>}
+              {supplementalSources.map((source) => (
+                <div key={source.chunk_id} className="border-t border-line pt-2">
+                  <Badge>{relationLabels[source.relation] ?? source.relation}</Badge> <code>{source.chunk_id}</code>
+                  {source.content && <MarkdownContent content={source.content} />}
+                </div>
+              ))}
+              {chunk.context && (
+                <details className="border-t border-line pt-2">
+                  <summary className="cursor-pointer font-semibold">查看下游完整上下文</summary>
+                  <div className="mt-3"><MarkdownContent content={chunk.context.content} /></div>
+                </details>
+              )}
+            </div>
+          </details>
         </section>
       </div>
     </article>
@@ -1034,6 +1081,10 @@ function RunSummary({ result, isRunning }: { result: RagRetrieveResponse | null;
           </div>
           {queryProcessing && <QueryProcessingSummary processing={queryProcessing} />}
           <div className="flex flex-wrap items-center gap-2 text-xs text-muted">
+            <Badge>索引：{result.metadata.index_version ?? (Object.entries(result.metadata.index_versions ?? {}).map(([kb, version]) => kb.slice(0, 8) + ":" + version).join("、") || "v1")}</Badge>
+            <span>图谱注入 {result.metadata.graph_injection?.graph_injected_count ?? 0} 条，入选 {result.metadata.graph_injection?.graph_selected_count ?? 0} 条 / {result.metadata.graph_injection?.latency_ms ?? 0}ms</span>
+            <span>上下文补充 {result.metadata.context_expansion?.supplemental_chunk_count ?? 0} 条 / {result.metadata.context_expansion?.latency_ms ?? 0}ms</span>
+            {(result.metadata.graph_injection?.degraded || result.metadata.context_expansion?.degraded) && <span className="text-amber-700">关系增强已降级：{result.metadata.graph_injection?.error ?? result.metadata.context_expansion?.error}</span>}
             {result.metadata.rerank?.enabled ? (
               <Badge className="border-moss/15 bg-moss/8 text-moss">
                 rerank: {result.metadata.rerank.model || result.metadata.rerank.provider || "enabled"}

@@ -19,6 +19,7 @@ export type RetrievePayload = {
   retrieval_options?: RetrievalOptions;
   rerank_options?: RerankOptions;
   query_options?: QueryOptions;
+  index_version?: string;
 };
 
 async function retrieve(payload: RetrievePayload) {

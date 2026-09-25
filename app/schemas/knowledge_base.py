@@ -28,6 +28,7 @@ class KnowledgeBaseResponse(BaseModel):
     name: str
     tenant_id: str
     created_at: datetime
+    active_index_version: str = "v1"
 
 
 class KnowledgeBaseDetailResponse(BaseModel):
@@ -38,6 +39,7 @@ class KnowledgeBaseDetailResponse(BaseModel):
     document_count: int = Field(ge=0)
     created_at: datetime
     updated_at: datetime
+    active_index_version: str = "v1"
 
 
 class KnowledgeBaseDeleteResponse(BaseModel):
@@ -58,6 +60,7 @@ class KnowledgeBaseTreeResponse(BaseModel):
     name: str
     description: str | None = None
     created_at: datetime
+    active_index_version: str = "v1"
     documents: list[KnowledgeBaseTreeDocumentResponse] = Field(default_factory=list)
 
 

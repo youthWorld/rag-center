@@ -16,6 +16,7 @@ GROUP_REQUEST_FIELDS = {
     "retrieval_options",
     "rerank_options",
     "query_options",
+    "index_version",
 }
 
 
@@ -166,12 +167,14 @@ def expand_group(group: dict[str, Any]) -> dict[str, Any]:
         errors.append(f"unsupported group fields: {unknown_fields}")
 
     if profile in NAMED_PROFILES:
-        advanced_fields = sorted(set(request_fields) - {"profile"})
+        advanced_fields = sorted(set(request_fields) - {"profile", "index_version"})
         if advanced_fields:
             errors.append(
                 f"named profile {profile!r} must not include advanced overrides: {advanced_fields}"
             )
         expanded = {"profile": profile, **expand_retrieve_profile(profile)}
+        if "index_version" in request_fields:
+            expanded["index_version"] = request_fields["index_version"]
     else:
         required = {"top_k", "retrieval_options", "rerank_options", "query_options"}
         missing = sorted(required - set(request_fields))
@@ -209,6 +212,7 @@ def expected_effective_config(group: dict[str, Any]) -> dict[str, Any]:
         "rerank_top_n": rerank.get("top_n"),
         "rewrite_enabled": rewrite_enabled,
         "synonym_enabled": query.get("synonym_enabled", True),
+        **({"index_version": expanded["index_version"]} if "index_version" in expanded else {}),
     }
 
 
@@ -230,6 +234,8 @@ def _comparison_config(expanded: dict[str, Any]) -> dict[str, Any]:
 
 
 def _validate_expanded_group(group: dict[str, Any], errors: list[str]) -> None:
+    if "index_version" in group and group["index_version"] not in {"v1", "v2"}:
+        errors.append("index_version must be v1 or v2")
     top_k = group.get("top_k")
     if not isinstance(top_k, int) or isinstance(top_k, bool) or top_k < 1:
         errors.append("top_k must be a positive integer")

@@ -57,10 +57,7 @@ class Qwen37RerankProvider(RerankProvider):
         if not self.api_key or not self.base_url:
             raise ValueError("rerank credentials or endpoint not configured")
         limit = min(top_n, len(candidates))
-        documents = [
-            f"标题：{item.get('title') or ''}\n正文：{str(item.get('content') or '')[:1024]}"
-            for item in candidates
-        ]
+        documents = [self._build_document(item) for item in candidates]
         started = time.perf_counter()
         try:
             async with httpx.AsyncClient(
@@ -116,3 +113,9 @@ class Qwen37RerankProvider(RerankProvider):
             ranked.append((score, index))
         ranked.sort(key=lambda pair: (-pair[0], pair[1]))
         return [{**candidates[index], "rerank_score": score} for score, index in ranked]
+
+    def _build_document(self, chunk: dict[str, Any]) -> str:
+        retrieval_text = str(chunk.get("retrieval_text") or "").strip()
+        if retrieval_text:
+            return retrieval_text[:1024]
+        return f"标题：{chunk.get('title') or ''}\n正文：{str(chunk.get('content') or '')[:1024]}"

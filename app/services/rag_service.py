@@ -23,6 +23,7 @@ from app.providers.query.pipeline import QueryPipeline
 from app.providers.rerank.base import RerankProvider
 from app.providers.rerank.noop import NoopRerankProvider
 from app.providers.vectorstores.base import VectorStore
+from app.repositories.index_version_repository import IndexVersionRepository
 from app.repositories.knowledge_base_repository import KnowledgeBaseRepository
 from app.repositories.retrieval_log_repository import RetrievalLogRepository
 from app.schemas.hybrid_search import RetrievalMode, RetrievalOptions
@@ -33,12 +34,15 @@ from app.schemas.rag import (
     RagRetrieveResponse,
     RetrievedChunk,
 )
+from app.services.context_expansion_service import ContextExpansionService
+from app.services.graph_candidate_expansion_service import GraphCandidateExpansionService
 from app.services.hybrid_search_service import HybridSearchService
 from app.services.multi_kb_fusion_service import MultiKBFusionService
 from app.services.rate_limit_service import RateLimitService
 from app.tenant.plan_resolver import PlanContext, PlanResolver
 from app.tenant.retrieve_presets import expand_retrieve_profile
 from app.utils.id_generator import generate_id
+from app.utils.markdown_splitter import is_low_information_content, normalize_content
 
 
 @dataclass(slots=True)
@@ -67,6 +71,9 @@ class RagService:
         query_pipeline: QueryPipeline | None = None,
         plan_resolver: PlanResolver | None = None,
         rate_limit_service: RateLimitService | None = None,
+        graph_candidate_expansion_service: GraphCandidateExpansionService | None = None,
+        context_expansion_service: ContextExpansionService | None = None,
+        index_version_repository: IndexVersionRepository | None = None,
     ) -> None:
         self.session = session
         self.settings = settings
@@ -86,6 +93,13 @@ class RagService:
         )
         self.plan_resolver = plan_resolver
         self.rate_limit_service = rate_limit_service
+        self.graph_candidate_expansion_service = (
+            graph_candidate_expansion_service or GraphCandidateExpansionService(session)
+        )
+        self.context_expansion_service = context_expansion_service or ContextExpansionService(
+            session
+        )
+        self.index_version_repository = index_version_repository or IndexVersionRepository(session)
         self.logger = get_logger(__name__)
 
     async def retrieve(
@@ -193,6 +207,11 @@ class RagService:
         )
         if knowledge_base is None:
             raise KnowledgeBaseNotFoundError()
+        index_version = await self._resolve_index_version(
+            request.index_version,
+            knowledge_base=knowledge_base,
+            tenant_id=tenant_id,
+        )
 
         query_processing = await self.query_pipeline.process(
             request.query,
@@ -260,8 +279,25 @@ class RagService:
             bm25_top_k=bm25_top_k,
             rrf_k=rrf_k,
             keyword_search_provider=keyword_search_provider,
+            index_version=index_version,
         )
-        retrieved = candidate.chunks[:top_k]
+        filtered_candidates, filter_metadata = (
+            self._filter_candidates(candidate.chunks)
+            if index_version != "v1"
+            else (candidate.chunks, {})
+        )
+        filtered_candidates = filtered_candidates[: max(top_k, 20)]
+        graph_result = await self.graph_candidate_expansion_service.expand_candidates(
+            tenant_id=tenant_id,
+            kb_ids=[knowledge_base.id],
+            seeds=self._tag_kb_chunks(filtered_candidates, knowledge_base),
+            index_version=index_version,
+        )
+        graph_candidates = self._merge_graph_candidates(
+            self._tag_kb_chunks(filtered_candidates, knowledge_base),
+            self._tag_kb_chunks(graph_result.candidates, knowledge_base),
+        )
+        retrieved = graph_candidates[: max(top_k, 30)]
         vector_count = candidate.vector_count
         bm25_count = candidate.bm25_count
         fused_count = candidate.fused_count
@@ -287,6 +323,16 @@ class RagService:
             degraded_reason=degraded_reason,
             empty_reason=empty_reason,
         )
+        if index_version != "v1":
+            retrieval_metadata.update(filter_metadata)
+            retrieval_metadata.update(
+                {
+                    "index_version": index_version,
+                    "graph_injection_executed": True,
+                    "graph_injected_count": graph_result.injected_count,
+                    "graph_injection_latency_ms": graph_result.latency_ms,
+                }
+            )
         observability.record_retrieval(
             search_query=search_query,
             mode=mode,
@@ -344,8 +390,27 @@ class RagService:
             error=rerank_error,
         )
 
+        graph_selected_count = 0
+        if rerank_enabled:
+            response_chunks = reranked[:rerank_top_n]
+            graph_selected_count = sum(
+                item.get("retrieval_source") == "graph" for item in response_chunks
+            )
+        else:
+            response_chunks, graph_selected_count = self._select_without_rerank(
+                seeds=self._tag_kb_chunks(filtered_candidates, knowledge_base),
+                injected=self._tag_kb_chunks(graph_result.candidates, knowledge_base),
+                top_k=top_k,
+            )
+        retrieval_metadata["graph_selected_count"] = graph_selected_count
+        context_result = await self.context_expansion_service.expand(
+            tenant_id=tenant_id,
+            kb_ids=[knowledge_base.id],
+            anchors=response_chunks,
+            index_version=index_version,
+        )
+        response_chunks = context_result.anchors
         latency_ms = int((time.perf_counter() - started_at) * 1000)
-        response_chunks = reranked[:rerank_top_n] if rerank_enabled else reranked
         retrieved_chunks = [
             RetrievedChunk(
                 document_id=item["document_id"],
@@ -367,6 +432,11 @@ class RagService:
                 rerank_score=(
                     float(item["rerank_score"]) if item.get("rerank_score") is not None else None
                 ),
+                index_version=item.get("index_version") or index_version,
+                section_id=item.get("section_id"),
+                parent_section_id=item.get("parent_section_id"),
+                order_index=item.get("order_index"),
+                context=item.get("context"),
                 metadata=dict(item.get("metadata") or {}),
             )
             for item in response_chunks
@@ -426,6 +496,26 @@ class RagService:
                     query_processing.to_dict() if query_processing.should_expose() else None
                 ),
                 "retrieval": retrieval_metadata,
+                "index_version": index_version,
+                "graph_injection": {
+                    "executed": index_version != "v1",
+                    "graph_injected_count": graph_result.injected_count,
+                    "graph_selected_count": graph_selected_count,
+                    "latency_ms": graph_result.latency_ms,
+                    "degraded": graph_result.degraded,
+                    "error": graph_result.error,
+                    "sources": graph_result.sources,
+                },
+                "context_expansion": {
+                    "executed": index_version != "v1",
+                    "anchor_count": len(response_chunks),
+                    "expanded_anchor_count": context_result.expanded_anchor_count,
+                    "supplemental_chunk_count": context_result.supplemental_chunk_count,
+                    "deduplicated_count": context_result.deduplicated_count,
+                    "latency_ms": context_result.latency_ms,
+                    "degraded": context_result.degraded,
+                    "error": context_result.error,
+                },
                 "rerank": self._build_rerank_metadata(
                     enabled=rerank_enabled,
                     top_n=rerank_top_n,
@@ -465,6 +555,12 @@ class RagService:
             kb_ids=kb_ids,
             tenant_id=tenant_id,
         )
+        versions = {
+            str(kb.id): await self._resolve_index_version(
+                request.index_version, knowledge_base=kb, tenant_id=tenant_id
+            )
+            for kb in knowledge_bases
+        }
         query_processing = await self.query_pipeline.process(
             request.query,
             knowledge_base=knowledge_bases[0],
@@ -532,6 +628,7 @@ class RagService:
                     bm25_top_k=per_kb_bm25_top_k,
                     rrf_k=rrf_k,
                     keyword_search_provider=keyword_search_provider,
+                    index_version=versions[str(knowledge_base.id)],
                 )
                 for knowledge_base in knowledge_bases
             ),
@@ -570,10 +667,22 @@ class RagService:
                 continue
 
             candidate = result
-            per_kb_chunks[str(knowledge_base.id)] = self._tag_kb_chunks(
-                candidate.chunks[:per_kb_top_k],
+            filtered, filter_metadata = (
+                self._filter_candidates(candidate.chunks)
+                if versions[kb_id] != "v1"
+                else (candidate.chunks, {})
+            )
+            per_kb_chunks[kb_id] = self._tag_kb_chunks(
+                [
+                    {**chunk, "index_version": chunk.get("index_version") or versions[kb_id]}
+                    for chunk in filtered[: max(top_k, per_kb_top_k)]
+                ],
                 knowledge_base,
             )
+            per_kb_metadata[kb_id] = {
+                "index_version": versions[kb_id],
+                **(filter_metadata if versions[kb_id] != "v1" else {}),
+            }
             vector_count += candidate.vector_count
             bm25_count += candidate.bm25_count
             if candidate.degraded and not degraded:
@@ -602,12 +711,17 @@ class RagService:
                 else "partial knowledge-base retrieval"
             )
 
-        retrieved = self.multi_kb_fusion_service.fuse(
+        direct_retrieved = self.multi_kb_fusion_service.fuse(
             per_kb_chunks,
             rrf_k=rrf_k,
         )
-        fused_count = len(retrieved)
-        retrieved = retrieved[:top_k]
+        fused_count = len(direct_retrieved)
+        graph_result = await self.graph_candidate_expansion_service.expand_candidates(
+            tenant_id=tenant_id, kb_ids=kb_ids, seeds=direct_retrieved[:20]
+        )
+        retrieved = self._merge_graph_candidates(
+            direct_retrieved[: max(top_k, 20)], graph_result.candidates
+        )[: max(top_k, 30)]
         empty_reason = (
             await self._resolve_empty_reason(
                 kb_ids=kb_ids,
@@ -633,6 +747,13 @@ class RagService:
             multi_kb=True,
             kb_count=len(kb_ids),
             per_kb_top_k=per_kb_top_k,
+        )
+        retrieval_metadata.update(
+            {
+                "index_versions": versions,
+                "graph_injected_count": graph_result.injected_count,
+                "graph_injection_latency_ms": graph_result.latency_ms,
+            }
         )
         observability.record_retrieval(
             search_query=search_query,
@@ -694,8 +815,24 @@ class RagService:
             error=rerank_error,
         )
 
+        graph_selected_count = 0
+        if rerank_enabled:
+            response_chunks = reranked[:rerank_top_n]
+            graph_selected_count = sum(
+                item.get("retrieval_source") == "graph" for item in response_chunks
+            )
+        else:
+            response_chunks, graph_selected_count = self._select_without_rerank(
+                seeds=direct_retrieved,
+                injected=graph_result.candidates,
+                top_k=top_k,
+            )
+        retrieval_metadata["graph_selected_count"] = graph_selected_count
+        context_result = await self.context_expansion_service.expand(
+            tenant_id=tenant_id, kb_ids=kb_ids, anchors=response_chunks
+        )
+        response_chunks = context_result.anchors
         latency_ms = int((time.perf_counter() - started_at) * 1000)
-        response_chunks = reranked[:rerank_top_n] if rerank_enabled else reranked
         retrieved_chunks = [
             RetrievedChunk(
                 document_id=item["document_id"],
@@ -713,6 +850,11 @@ class RagService:
                 rerank_score=(
                     float(item["rerank_score"]) if item.get("rerank_score") is not None else None
                 ),
+                index_version=item.get("index_version") or versions[str(item["kb_id"])],
+                section_id=item.get("section_id"),
+                parent_section_id=item.get("parent_section_id"),
+                order_index=item.get("order_index"),
+                context=item.get("context"),
                 metadata=dict(item.get("metadata") or {}),
             )
             for item in response_chunks
@@ -773,6 +915,26 @@ class RagService:
                     query_processing.to_dict() if query_processing.should_expose() else None
                 ),
                 "retrieval": retrieval_metadata,
+                "index_versions": versions,
+                "graph_injection": {
+                    "executed": any(v != "v1" for v in versions.values()),
+                    "graph_injected_count": graph_result.injected_count,
+                    "graph_selected_count": graph_selected_count,
+                    "latency_ms": graph_result.latency_ms,
+                    "degraded": graph_result.degraded,
+                    "error": graph_result.error,
+                    "sources": graph_result.sources,
+                },
+                "context_expansion": {
+                    "executed": any(v != "v1" for v in versions.values()),
+                    "anchor_count": len(response_chunks),
+                    "expanded_anchor_count": context_result.expanded_anchor_count,
+                    "supplemental_chunk_count": context_result.supplemental_chunk_count,
+                    "deduplicated_count": context_result.deduplicated_count,
+                    "latency_ms": context_result.latency_ms,
+                    "degraded": context_result.degraded,
+                    "error": context_result.error,
+                },
                 "rerank": self._build_rerank_metadata(
                     enabled=rerank_enabled,
                     top_n=rerank_top_n,
@@ -807,6 +969,7 @@ class RagService:
         bm25_top_k: int,
         rrf_k: int,
         keyword_search_provider: KeywordSearchProvider | None,
+        index_version: str = "v1",
     ) -> _RetrievalCandidates:
         vector_results: list[dict[str, Any]] = []
         bm25_results: list[dict[str, Any]] = []
@@ -831,12 +994,23 @@ class RagService:
                 )
             else:
                 try:
-                    vector_results = await self.vector_store.similarity_search(
-                        query_vector,
-                        tenant_id=tenant_id,
-                        kb_id=knowledge_base.id,
-                        top_k=vector_top_k,
-                    )
+                    try:
+                        vector_results = await self.vector_store.similarity_search(
+                            query_vector,
+                            tenant_id=tenant_id,
+                            kb_id=knowledge_base.id,
+                            top_k=vector_top_k,
+                            index_version=index_version,
+                        )
+                    except TypeError as exception:
+                        if index_version != "v1" or "index_version" not in str(exception):
+                            raise
+                        vector_results = await self.vector_store.similarity_search(
+                            query_vector,
+                            tenant_id=tenant_id,
+                            kb_id=knowledge_base.id,
+                            top_k=vector_top_k,
+                        )
                 except Exception as exception:
                     vector_failed = True
                     vector_exception = exception
@@ -880,12 +1054,23 @@ class RagService:
                 )
             bm25_started_at = time.perf_counter()
             try:
-                bm25_results = await keyword_search_provider.keyword_search(
-                    query=search_query,
-                    tenant_id=tenant_id,
-                    kb_id=knowledge_base.id,
-                    top_k=bm25_top_k,
-                )
+                try:
+                    bm25_results = await keyword_search_provider.keyword_search(
+                        query=search_query,
+                        tenant_id=tenant_id,
+                        kb_id=knowledge_base.id,
+                        top_k=bm25_top_k,
+                        index_version=index_version,
+                    )
+                except TypeError as exception:
+                    if index_version != "v1" or "index_version" not in str(exception):
+                        raise
+                    bm25_results = await keyword_search_provider.keyword_search(
+                        query=search_query,
+                        tenant_id=tenant_id,
+                        kb_id=knowledge_base.id,
+                        top_k=bm25_top_k,
+                    )
             except Exception as exception:
                 bm25_failed = True
                 bm25_exception = exception
@@ -1047,6 +1232,139 @@ class RagService:
             if kb_id not in by_id:
                 raise KnowledgeBaseNotFoundError(missing_kb_id=kb_id)
         return [by_id[kb_id] for kb_id in kb_ids]
+
+    async def _resolve_index_version(
+        self,
+        requested_version: str | None,
+        *,
+        knowledge_base: Any,
+        tenant_id: str,
+    ) -> str:
+        version = str(
+            requested_version or getattr(knowledge_base, "active_index_version", None) or "v1"
+        )
+        if requested_version is None:
+            return version
+        repository = self.index_version_repository
+        get_version = getattr(repository, "get", None)
+        if not callable(get_version):
+            return version
+        item = await get_version(
+            tenant_id=tenant_id,
+            kb_id=str(knowledge_base.id),
+            version=version,
+        )
+        if item is None or str(getattr(item, "status", "")) not in {
+            "active",
+            "ready",
+            "archived",
+        }:
+            raise_app_error(
+                ErrorCode.PARAM_ERROR,
+                "index version is not queryable",
+                context={"kb_id": str(knowledge_base.id), "index_version": version},
+            )
+        return version
+
+    @staticmethod
+    def _merge_graph_candidates(
+        seeds: list[dict[str, Any]], injected: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        existing_ids = {str(item.get("chunk_id")) for item in seeds}
+        return [
+            *seeds,
+            *[item for item in injected if str(item.get("chunk_id")) not in existing_ids],
+        ]
+
+    @staticmethod
+    def _select_without_rerank(
+        *,
+        seeds: list[dict[str, Any]],
+        injected: list[dict[str, Any]],
+        top_k: int,
+    ) -> tuple[list[dict[str, Any]], int]:
+        if top_k <= 0:
+            return [], 0
+        quota = 0 if top_k <= 1 else 1 if top_k < 5 else min(2, top_k // 5)
+        if quota == 0:
+            return seeds[:top_k], 0
+        seed_ids = {str(item.get("chunk_id") or "") for item in seeds}
+        seen_chunk_ids = set(seed_ids)
+        selected_anchor_ids: set[str] = set()
+        eligible: list[dict[str, Any]] = []
+        for item in sorted(
+            injected,
+            key=lambda candidate: (
+                int(
+                    candidate.get(
+                        "_graph_relation_rank",
+                        {"reference": 0, "parent_section": 1, "previous": 2, "next": 3}.get(
+                            str(
+                                candidate.get("injection_source")
+                                or (candidate.get("metadata") or {}).get("injection_source")
+                                or ""
+                            ),
+                            99,
+                        ),
+                    )
+                ),
+                int(candidate.get("_graph_anchor_rank", 999999)),
+                candidate.get("order_index") is None,
+                int(candidate.get("order_index") or 0),
+                str(candidate.get("chunk_id") or ""),
+            ),
+        ):
+            chunk_id = str(item.get("chunk_id") or "")
+            anchor_id = str(
+                item.get("_graph_anchor_id")
+                or (item.get("metadata") or {}).get("injection_anchor_id")
+                or ""
+            )
+            if not chunk_id or chunk_id in seen_chunk_ids or anchor_id in selected_anchor_ids:
+                continue
+            seen_chunk_ids.add(chunk_id)
+            selected_anchor_ids.add(anchor_id)
+            eligible.append(item)
+            if len(eligible) >= quota:
+                break
+        direct_count = max(0, top_k - len(eligible))
+        return [*seeds[:direct_count], *eligible], len(eligible)
+
+    @staticmethod
+    def _filter_candidates(
+        chunks: list[dict[str, Any]],
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        filtered: list[dict[str, Any]] = []
+        seen_ids: set[str] = set()
+        seen_content: set[str] = set()
+        reasons: dict[str, int] = {}
+        for chunk in chunks:
+            metadata = chunk.get("metadata") or {}
+            content = str(chunk.get("content") or "")
+            reason: str | None = None
+            chunk_id = str(chunk.get("chunk_id") or chunk.get("id") or "")
+            normalized = normalize_content(content)
+            if metadata.get("chunk_type") == "reference_pointer":
+                reason = "reference_pointer"
+            elif is_low_information_content(content):
+                reason = "low_information"
+            elif chunk_id and chunk_id in seen_ids:
+                reason = "duplicate_chunk_id"
+            elif normalized in seen_content:
+                reason = "duplicate_content"
+            if reason:
+                reasons[reason] = reasons.get(reason, 0) + 1
+                continue
+            if chunk_id:
+                seen_ids.add(chunk_id)
+            seen_content.add(normalized)
+            filtered.append(chunk)
+        return filtered, {
+            "candidate_count_before_filter": len(chunks),
+            "candidate_count_after_filter": len(filtered),
+            "filtered_count": len(chunks) - len(filtered),
+            "filtered_reasons": reasons,
+        }
 
     @staticmethod
     def _tag_kb_chunks(

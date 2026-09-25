@@ -436,7 +436,7 @@ async def log_llm_call(
     active_logger.info(
         "LLM_REQUEST | model=%s | prompt=%s",
         model,
-        format_log_value(prompt, max_length=max_length),
+        _format_llm_prompt(prompt, max_length=max_length),
     )
     try:
         response = await operation()
@@ -447,7 +447,7 @@ async def log_llm_call(
             (time.perf_counter() - started) * 1000,
             type(exception).__name__,
             str(exception),
-            format_log_value(prompt, max_length=max_length),
+            _format_llm_prompt(prompt, max_length=max_length),
         )
         raise
 
@@ -459,6 +459,19 @@ async def log_llm_call(
         format_log_value(rendered_response, max_length=max_length),
     )
     return response
+
+
+def _format_llm_prompt(prompt: Any, *, max_length: int) -> str:
+    """Keep model logs useful without copying document contents into log files."""
+
+    del max_length
+    if isinstance(prompt, list) and all(isinstance(item, str) for item in prompt):
+        return f"<text_batch count={len(prompt)} chars={sum(len(item) for item in prompt)}>"
+    if isinstance(prompt, str):
+        return f"<text chars={len(prompt)}>"
+    if isinstance(prompt, dict):
+        return f"<object keys={sorted(str(key) for key in prompt)}>"
+    return f"<{type(prompt).__name__}>"
 
 
 log_api = log_api_call

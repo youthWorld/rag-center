@@ -162,6 +162,12 @@ class EvaluationRunner:
                     cases, group_name=group_name, group=group, warmup=False
                 )
                 write_jsonl(run_dir / f"{group_name}.raw.jsonl", rows)
+                if self.experiment.get("experiment_id") == "context_graph_upgrade" and any(
+                    row.get("error") or row.get("effective_config_mismatches") for row in rows
+                ):
+                    raise EvaluationRunError(
+                        f"{group_name} index-version or configuration validation failed"
+                    )
                 manifest["groups"][group_name].update(_group_manifest_summary(rows))
                 write_json(run_dir / "manifest.json", manifest)
         except Exception as exc:
@@ -262,6 +268,28 @@ class EvaluationRunner:
         chunks = data.get("retrieved_chunks")
         if not isinstance(chunks, list):
             raise EvaluationRunError("retrieve response has no retrieved_chunks array")
+        version = group.get("index_version")
+        enforce_version = self.experiment.get("experiment_id") == "context_graph_upgrade"
+        if (
+            enforce_version
+            and version
+            and (
+                metadata.get("index_version") != version
+                or any(
+                    not isinstance(chunk, dict) or chunk.get("index_version") != version
+                    for chunk in chunks
+                )
+            )
+        ):
+            raise EvaluationRunError(f"{group_name} returned a different index version")
+        if self.experiment.get("experiment_id") == "context_graph_upgrade":
+            if len(chunks) > 10 or metadata.get("rerank", {}).get("enabled"):
+                raise EvaluationRunError(f"{group_name} returned unexpected TopK or rerank")
+            if version == "v2" and any(
+                chunk.get("section_id") is None or chunk.get("order_index") is None
+                for chunk in chunks
+            ):
+                raise EvaluationRunError("v2 chunks lack structural fields")
         effective = normalize_effective_config(metadata)
         expected = expected_effective_config(group)
         mismatches = compare_effective_config(expected, effective)
@@ -281,16 +309,24 @@ class EvaluationRunner:
             "kb_alias": kb_alias,
             "kb_id": kb_config["kb_id"],
             "corpus_version": kb_config["corpus_version"],
-            "contexts": [
-                normalize_context(chunk, rank=index)
-                for index, chunk in enumerate(chunks, 1)
-            ],
+            "contexts": normalize_contexts(chunks, index_version=version),
+            "index_version": metadata.get("index_version"),
+            "graph_injected_count": (metadata.get("graph_injection") or {}).get(
+                "graph_injected_count", 0
+            ),
+            "supplemental_chunk_count": (metadata.get("context_expansion") or {}).get(
+                "supplemental_chunk_count", 0
+            ),
+            "graph_injection_latency_ms": (metadata.get("graph_injection") or {}).get(
+                "latency_ms", 0
+            ),
+            "context_expansion_latency_ms": (metadata.get("context_expansion") or {}).get(
+                "latency_ms", 0
+            ),
             "answer": None,
             "latency_ms": round(latency_ms, 3),
             "application_model_calls": model_calls,
-            "application_model_call_details": metadata.get(
-                "application_model_call_details"
-            ),
+            "application_model_call_details": metadata.get("application_model_call_details"),
             "effective_config": effective,
             "effective_config_expected": expected,
             "effective_config_mismatches": mismatches,
@@ -299,6 +335,8 @@ class EvaluationRunner:
                 "query_processing": metadata.get("query_processing"),
                 "retrieval": metadata.get("retrieval"),
                 "rerank": metadata.get("rerank"),
+                "graph_injection": metadata.get("graph_injection"),
+                "context_expansion": metadata.get("context_expansion"),
             },
             "degradation": degradation,
             "retry": None,
@@ -367,8 +405,7 @@ class EvaluationRunner:
                 for alias, config in self.dataset["knowledge_bases"].items()
             },
             "knowledge_bases": {
-                alias: config["kb_id"]
-                for alias, config in self.dataset["knowledge_bases"].items()
+                alias: config["kb_id"] for alias, config in self.dataset["knowledge_bases"].items()
             },
             "run_config": {
                 "concurrency": self.experiment["concurrency"],
@@ -403,7 +440,36 @@ class EvaluationRunner:
         }
 
 
-def normalize_context(chunk: Any, *, rank: int) -> dict[str, Any]:
+def normalize_contexts(chunks: list[Any], *, index_version: str | None) -> list[dict[str, Any]]:
+    seen: set[str] = set()
+    seen_supplemental: set[str] = set()
+    result: list[dict[str, Any]] = []
+    for chunk in chunks:
+        context = normalize_context(chunk, rank=len(result) + 1, index_version=index_version)
+        if index_version == "v2" and isinstance(chunk, Mapping):
+            raw_context = chunk.get("context")
+            if isinstance(raw_context, Mapping):
+                anchor_content = str(chunk.get("content") or "")
+                sources = raw_context.get("sources")
+                if isinstance(sources, list):
+                    parts = [anchor_content] if anchor_content else []
+                    for source in sources:
+                        if not isinstance(source, Mapping) or source.get("relation") == "anchor":
+                            continue
+                        source_content = str(source.get("content") or "").strip()
+                        if source_content and source_content not in seen_supplemental:
+                            seen_supplemental.add(source_content)
+                            parts.append(source_content)
+                    if parts:
+                        context["content"] = "\n\n".join(parts)
+        content = context["content"].strip()
+        if content and content not in seen:
+            seen.add(content)
+            result.append(context)
+    return result
+
+
+def normalize_context(chunk: Any, *, rank: int, index_version: str | None = None) -> dict[str, Any]:
     if not isinstance(chunk, Mapping):
         return {
             "rank": rank,
@@ -416,9 +482,11 @@ def normalize_context(chunk: Any, *, rank: int) -> dict[str, Any]:
         }
     metadata = chunk.get("metadata")
     metadata = metadata if isinstance(metadata, Mapping) else {}
+    expanded = chunk.get("context") if index_version == "v2" else None
+    evidence = expanded.get("content") if isinstance(expanded, Mapping) else None
     return {
         "rank": rank,
-        "content": str(chunk.get("content") or ""),
+        "content": str(evidence or chunk.get("content") or ""),
         "document_id": chunk.get("document_id"),
         "chunk_id": chunk.get("chunk_id"),
         "kb_id": chunk.get("kb_id"),
@@ -429,6 +497,7 @@ def normalize_context(chunk: Any, *, rank: int) -> dict[str, Any]:
         "bm25_score": chunk.get("bm25_score"),
         "rerank_score": chunk.get("rerank_score"),
         "retrieval_source": chunk.get("retrieval_source"),
+        "index_version": chunk.get("index_version"),
     }
 
 
@@ -453,6 +522,7 @@ def normalize_effective_config(metadata: dict[str, Any]) -> dict[str, Any]:
         "rewrite_enabled": tenant_policy.get("effective_query_rewrite"),
         "synonym_enabled": query.get("synonym_enabled"),
         "plan": tenant_policy.get("plan"),
+        "index_version": metadata.get("index_version"),
     }
 
 
@@ -462,16 +532,22 @@ def compare_effective_config(
     mismatches: list[dict[str, Any]] = []
     for key, expected_value in expected.items():
         actual_value = actual.get(key)
+        if key == "index_version" and actual_value is None:
+            continue
         if actual_value != expected_value:
-            mismatches.append(
-                {"field": key, "expected": expected_value, "actual": actual_value}
-            )
+            mismatches.append({"field": key, "expected": expected_value, "actual": actual_value})
     return mismatches
 
 
 def collect_degradation(metadata: dict[str, Any]) -> list[dict[str, Any]]:
     issues: list[dict[str, Any]] = []
-    for stage in ("query_processing", "retrieval", "rerank"):
+    for stage in (
+        "query_processing",
+        "retrieval",
+        "rerank",
+        "graph_injection",
+        "context_expansion",
+    ):
         value = metadata.get(stage)
         if isinstance(value, Mapping) and value.get("degraded"):
             issues.append(

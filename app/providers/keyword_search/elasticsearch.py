@@ -17,6 +17,7 @@ class ElasticsearchKeywordSearchProvider(KeywordSearchProvider):
             "kb_id": {"type": "keyword"},
             "document_id": {"type": "keyword"},
             "chunk_id": {"type": "keyword"},
+            "index_version": {"type": "keyword"},
             "title": {
                 "type": "text",
                 "analyzer": "ik_max_word",
@@ -27,7 +28,15 @@ class ElasticsearchKeywordSearchProvider(KeywordSearchProvider):
                 "analyzer": "ik_max_word",
                 "search_analyzer": "ik_smart",
             },
-            "metadata": {"type": "object", "enabled": True},
+            "retrieval_text": {
+                "type": "text",
+                "analyzer": "ik_max_word",
+                "search_analyzer": "ik_smart",
+            },
+            "section_id": {"type": "keyword"},
+            "parent_section_id": {"type": "keyword"},
+            "order_index": {"type": "integer"},
+            "metadata": {"type": "object", "enabled": False},
             "created_at": {"type": "date"},
         }
     }
@@ -60,8 +69,13 @@ class ElasticsearchKeywordSearchProvider(KeywordSearchProvider):
                     "kb_id": chunk["kb_id"],
                     "document_id": chunk["document_id"],
                     "chunk_id": chunk_id,
+                    "index_version": str(chunk.get("index_version") or "v1"),
                     "title": chunk["title"],
                     "content": chunk["content"],
+                    "retrieval_text": chunk.get("retrieval_text"),
+                    "section_id": chunk.get("section_id"),
+                    "parent_section_id": chunk.get("parent_section_id"),
+                    "order_index": chunk.get("order_index"),
                     "metadata": chunk.get("metadata", {}),
                     "created_at": self._serialize_created_at(chunk.get("created_at")),
                 }
@@ -79,21 +93,28 @@ class ElasticsearchKeywordSearchProvider(KeywordSearchProvider):
         tenant_id: str,
         kb_id: str,
         top_k: int = 20,
+        index_version: str | None = None,
     ) -> list[dict[str, Any]]:
         if top_k < 1:
             return []
 
         await self._ensure_index()
+        filters = [
+            {"term": {"tenant_id": tenant_id}},
+            {"term": {"kb_id": kb_id}},
+        ]
+        if index_version is not None:
+            filters.append({"term": {"index_version": index_version}})
+        fields = ["title^2", "content"]
+        if index_version and index_version != "v1":
+            fields = ["retrieval_text", "title^2"]
         query_body = {
             "bool": {
-                "filter": [
-                    {"term": {"tenant_id": tenant_id}},
-                    {"term": {"kb_id": kb_id}},
-                ],
+                "filter": filters,
                 "must": {
                     "multi_match": {
                         "query": query,
-                        "fields": ["title^2", "content"],
+                        "fields": fields,
                     }
                 },
             }
@@ -121,12 +142,17 @@ class ElasticsearchKeywordSearchProvider(KeywordSearchProvider):
             )
         return results
 
-    async def delete_by_document_id(self, document_id: str) -> None:
+    async def delete_by_document_id(
+        self, document_id: str, *, index_version: str | None = None
+    ) -> None:
         if not await self._index_exists():
             return
+        filters: list[dict[str, Any]] = [{"term": {"document_id": document_id}}]
+        if index_version is not None:
+            filters.append({"term": {"index_version": index_version}})
         await self.client.delete_by_query(
             index=self.index,
-            query={"term": {"document_id": document_id}},
+            query={"bool": {"filter": filters}},
             conflicts="proceed",
             refresh=True,
         )

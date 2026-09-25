@@ -173,6 +173,7 @@ class DocumentService:
         if document is None:
             raise DocumentNotFoundError(document_id)
         self._ensure_not_processing(document.status, operation="delete")
+        await self._ensure_no_rebuild(tenant_id=tenant_id, kb_id=document.kb_id)
 
         try:
             await self.indexing_service.purge_document_chunks(document.id)
@@ -224,6 +225,7 @@ class DocumentService:
                 "only successful or failed documents can be reindexed",
                 context={"document_id": document.id, "status": int(document.status)},
             )
+        await self._ensure_no_rebuild(tenant_id=tenant_id, kb_id=document.kb_id)
         if self.quota_service is not None:
             plan = await self.plan_resolver.resolve_for_tenant_id(tenant_id)
             await self.quota_service.check_reindex_document(
@@ -232,7 +234,24 @@ class DocumentService:
             )
 
         try:
-            await self.indexing_service.purge_document_chunks(document.id)
+            get_kb = getattr(self.knowledge_base_repository, "get_by_id", None)
+            knowledge_base = (
+                await get_kb(kb_id=document.kb_id, tenant_id=tenant_id)
+                if callable(get_kb)
+                else None
+            )
+            active_version = getattr(knowledge_base, "active_index_version", "v1") or "v1"
+            if callable(get_kb):
+                try:
+                    await self.indexing_service.purge_document_chunks(
+                        document.id, index_version=active_version
+                    )
+                except TypeError as exception:
+                    if "index_version" not in str(exception):
+                        raise
+                    await self.indexing_service.purge_document_chunks(document.id)
+            else:
+                await self.indexing_service.purge_document_chunks(document.id)
             document.status = int(DocumentStatus.PROCESSING)
             document.error_message = None
             await self.session.commit()
@@ -249,6 +268,11 @@ class DocumentService:
             await self._enqueue_document(document.id)
 
         return self._upload_response(document.id, document.kb_id)
+
+    async def _ensure_no_rebuild(self, *, tenant_id: str, kb_id: str) -> None:
+        guard = getattr(self.indexing_service, "_ensure_not_building", None)
+        if callable(guard):
+            await guard(tenant_id=tenant_id, kb_id=kb_id)
 
     async def _check_upload_quota(self, *, tenant_id: str, kb_id: str) -> None:
         if self.quota_service is None:

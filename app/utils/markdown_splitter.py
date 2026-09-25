@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import re
 from dataclasses import dataclass, field
 from typing import Any
@@ -13,6 +14,73 @@ class SplitPiece:
 
     text: str
     metadata: dict[str, Any] = field(default_factory=dict)
+
+
+def normalize_content(content: str) -> str:
+    """Normalize only for quality checks; never use this value as user content."""
+
+    return re.sub(r"\s+", " ", (content or "").strip())
+
+
+def strip_markdown(value: str) -> str:
+    value = re.sub(r"^\s{0,3}#{1,6}\s+", "", value.strip())
+    value = re.sub(r"[*_`~]", "", value)
+    return normalize_content(value)
+
+
+def contains_letter_number_or_cjk(value: str) -> bool:
+    return bool(re.search(r"[A-Za-z0-9\u3400-\u9fff]", value or ""))
+
+
+def is_separator_only(value: str) -> bool:
+    lines = [line.strip() for line in (value or "").splitlines() if line.strip()]
+    return bool(lines) and all(bool(re.fullmatch(r"[-_*~`\s|]+", line)) for line in lines)
+
+
+def is_low_information_content(content: str, heading: str | None = None) -> bool:
+    """Return whether a piece has no standalone evidence.
+
+    This deliberately does not use a minimum character count: short policy
+    statements can be highly informative.
+    """
+
+    normalized = normalize_content(content)
+    if not normalized or is_separator_only(content):
+        return True
+    if not contains_letter_number_or_cjk(normalized):
+        return True
+    if heading and strip_markdown(normalized) == strip_markdown(heading):
+        return True
+    lines = [line.strip() for line in (content or "").splitlines() if line.strip()]
+    if (
+        len(lines) == 2
+        and lines[0].startswith("|")
+        and MarkdownStructuredSplitter._is_table_separator(lines[1])
+    ):
+        return True
+    if lines and len(lines) == 1 and MarkdownStructuredSplitter._parse_heading(lines[0]):
+        return True
+    return False
+
+
+def build_retrieval_text(
+    *, document_title: str | None, heading_path: str | None, content: str
+) -> str:
+    """Build the deterministic text sent to vector, BM25 and rerank providers."""
+
+    lines: list[str] = []
+    if document_title and document_title.strip():
+        lines.append(f"文档：{document_title.strip()}")
+    if heading_path and heading_path.strip():
+        lines.append(f"章节：{heading_path.replace('/', ' > ')}")
+    lines.append(f"正文：{content}")
+    return "\n".join(lines)
+
+
+def stable_section_id(*, document_id: str, index_version: str, heading_path: str | None) -> str:
+    path = heading_path or "__root__"
+    digest = hashlib.sha1(f"{document_id}:{index_version}:{path}".encode()).hexdigest()[:24]
+    return f"section-{digest}"
 
 
 @dataclass(frozen=True)
@@ -45,7 +113,7 @@ class MarkdownStructuredSplitter:
         self.chunk_overlap = chunk_overlap
         self.table_max_rows_per_chunk = table_max_rows_per_chunk
 
-    def split(self, text: str) -> list[SplitPiece]:
+    def split(self, text: str, *, include_subheadings: bool = False) -> list[SplitPiece]:
         normalized = text.replace("\r\n", "\n").replace("\r", "\n")
         if not normalized.strip():
             return []
@@ -59,7 +127,7 @@ class MarkdownStructuredSplitter:
 
         for line in lines:
             heading = None if in_fence else self._parse_heading(line)
-            if heading is not None and heading[0] <= 2:
+            if heading is not None and (include_subheadings or heading[0] <= 2):
                 pieces.extend(self._flush_section(section_lines, heading_path))
                 level, title = heading
                 if level == 1:
@@ -68,9 +136,9 @@ class MarkdownStructuredSplitter:
                     heading_stack = {
                         stack_level: stack_title
                         for stack_level, stack_title in heading_stack.items()
-                        if stack_level < 2
+                        if stack_level < level
                     }
-                    heading_stack[2] = title
+                    heading_stack[level] = title
                 heading_path = tuple(
                     heading_stack[stack_level] for stack_level in sorted(heading_stack)
                 )
@@ -86,6 +154,142 @@ class MarkdownStructuredSplitter:
 
         pieces.extend(self._flush_section(section_lines, heading_path))
         return pieces
+
+    def split_contextual(
+        self,
+        text: str,
+        *,
+        document_id: str,
+        index_version: str = "v2",
+    ) -> list[SplitPiece]:
+        """Create index-ready contextual pieces without changing raw content.
+
+        ` ` split ` ` remains the backwards-compatible structural parser. This
+        method applies the v2 rules: low-information filtering, same-section
+        coalescing, deterministic section identifiers and final ordering.
+        """
+
+        raw_pieces = self.split(text, include_subheadings=True)
+        if not raw_pieces:
+            return []
+
+        coalesced: list[SplitPiece] = []
+        seen_by_section: dict[str, set[str]] = {}
+        pending_reference: dict[str, str] = {}
+        for piece in raw_pieces:
+            heading_path = piece.metadata.get("heading_path")
+            heading = heading_path.rsplit("/", 1)[-1] if heading_path else None
+            if is_low_information_content(piece.text, heading):
+                continue
+            section_id = stable_section_id(
+                document_id=document_id,
+                index_version=index_version,
+                heading_path=heading_path,
+            )
+            normalized = normalize_content(piece.text)
+            section_seen = seen_by_section.setdefault(section_id, set())
+            if normalized in section_seen:
+                continue
+            section_seen.add(normalized)
+
+            is_pointer = self._is_reference_pointer_only(piece.text)
+            if is_pointer and coalesced and coalesced[-1].metadata.get("section_id") == section_id:
+                coalesced[-1].text = self._join_units(coalesced[-1].text, piece.text)
+                coalesced[-1].metadata["reference_texts"] = list(
+                    dict.fromkeys(
+                        [
+                            *coalesced[-1].metadata.get("reference_texts", []),
+                            *self._reference_texts(piece.text),
+                        ]
+                    )
+                )
+                continue
+            if is_pointer:
+                pending_reference[section_id] = (
+                    self._join_units(pending_reference[section_id], piece.text)
+                    if section_id in pending_reference
+                    else piece.text
+                )
+                continue
+            if section_id in pending_reference:
+                piece.text = self._join_units(piece.text, pending_reference.pop(section_id))
+
+            if coalesced:
+                previous = coalesced[-1]
+                same_section = previous.metadata.get("section_id") == section_id
+                candidate = self._join_units(previous.text, piece.text)
+                if same_section and len(candidate) <= self.chunk_size:
+                    previous.text = candidate
+                    previous.metadata["chunk_type"] = self._merged_chunk_type(
+                        previous.metadata.get("chunk_type"),
+                        piece.metadata.get("chunk_type"),
+                    )
+                    previous.metadata["reference_texts"] = [
+                        *previous.metadata.get("reference_texts", []),
+                        *self._reference_texts(piece.text),
+                    ]
+                    continue
+
+            parent_path = (
+                heading_path.rsplit("/", 1)[0]
+                if isinstance(heading_path, str) and "/" in heading_path
+                else None
+            )
+            metadata = {
+                **piece.metadata,
+                "section_id": section_id,
+                "parent_section_id": (
+                    stable_section_id(
+                        document_id=document_id,
+                        index_version=index_version,
+                        heading_path=parent_path,
+                    )
+                    if parent_path
+                    else None
+                ),
+                "reference_texts": self._reference_texts(piece.text),
+                "chunk_type": self._contextual_chunk_type(piece.text, piece.metadata),
+                "heading_level": len(heading_path.split("/")) if heading_path else None,
+            }
+            coalesced.append(SplitPiece(text=piece.text, metadata=metadata))
+
+        for order_index, piece in enumerate(coalesced):
+            piece.metadata["order_index"] = order_index
+        return coalesced
+
+    @staticmethod
+    def _reference_texts(content: str) -> list[str]:
+        matches = re.findall(
+            r"(?:^|[>\n])\s*((?:关联规则|参见|见)[：:：]?[^\n]+|\[[^]]+\]\([^)]*\))",
+            content,
+        )
+        return [normalize_content(match) for match in matches if normalize_content(match)]
+
+    @classmethod
+    def _is_reference_pointer_only(cls, content: str) -> bool:
+        lines = [line.strip() for line in content.splitlines() if line.strip()]
+        evidence_lines = [line for line in lines if cls._parse_heading(line) is None]
+        return bool(evidence_lines) and all(
+            re.match(r"^\s*>?\s*(?:参见|见|关联规则)[：:]", line)
+            for line in evidence_lines
+        )
+
+    @staticmethod
+    def _contextual_chunk_type(content: str, metadata: dict[str, Any]) -> str:
+        if metadata.get("chunk_type") == "table" or ("|" in content and "【表头】" in content):
+            return "table"
+        if re.search(r"^\s*```", content, flags=re.MULTILINE):
+            return "code"
+        lines = [line.strip() for line in content.splitlines() if line.strip()]
+        if lines and all(re.match(r"^(?:[-*+] |\d+[.)] )", line) for line in lines):
+            return "list"
+        return "prose"
+
+    @staticmethod
+    def _merged_chunk_type(first: str | None, second: str | None) -> str:
+        if first == second and first:
+            return first
+        return "prose"
 
     def _flush_section(
         self,
@@ -253,10 +457,13 @@ class MarkdownStructuredSplitter:
 
         available = self.chunk_size - len(first_line) - 2
         if available <= 0:
-            return [first_line, *TextSplitter(
-                chunk_size=self.chunk_size,
-                chunk_overlap=self.chunk_overlap,
-            ).split_text(remainder)]
+            return [
+                first_line,
+                *TextSplitter(
+                    chunk_size=self.chunk_size,
+                    chunk_overlap=self.chunk_overlap,
+                ).split_text(remainder),
+            ]
 
         body_chunks = TextSplitter(
             chunk_size=available,

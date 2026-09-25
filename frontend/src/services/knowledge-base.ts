@@ -5,6 +5,7 @@ import type {
   KnowledgeBaseDeleteResponse,
   KnowledgeBaseDetailData,
   KnowledgeBaseTenantTree,
+  IndexVersionList,
   UpdateKnowledgeBaseRequest,
 } from "../types";
 
@@ -34,6 +35,36 @@ export async function fetchDetail(kbId: string) {
   return response.data.data;
 }
 
+export async function fetchIndexVersions(kbId: string) {
+  const response = await api.get<ApiEnvelope<IndexVersionList>>(
+    "/api/v1/knowledge-bases/" + encodeURIComponent(kbId) + "/index-versions",
+  );
+  return response.data.data;
+}
+
+export async function rebuildIndexVersion(kbId: string, version = "v2") {
+  const response = await api.post<ApiEnvelope<{ kb_id: string; version: string; status: string }>>(
+    "/api/v1/knowledge-bases/" + encodeURIComponent(kbId) + "/index-versions/rebuild",
+    undefined,
+    { params: { version } },
+  );
+  return response.data.data;
+}
+
+export async function activateIndexVersion(kbId: string, version: string) {
+  const response = await api.post<ApiEnvelope<IndexVersionList["versions"][number]>>(
+    "/api/v1/knowledge-bases/" + encodeURIComponent(kbId) + "/index-versions/" + encodeURIComponent(version) + "/activate",
+  );
+  return response.data.data;
+}
+
+export async function deleteIndexVersion(kbId: string, version: string) {
+  const response = await api.delete<ApiEnvelope<{ kb_id: string; version: string }>>(
+    "/api/v1/knowledge-bases/" + encodeURIComponent(kbId) + "/index-versions/" + encodeURIComponent(version),
+  );
+  return response.data.data;
+}
+
 export async function updateKnowledgeBase(kbId: string, payload: UpdateKnowledgeBaseRequest) {
   const response = await api.patch<ApiEnvelope<KnowledgeBaseDetailData>>(
     `/api/v1/knowledge-bases/${encodeURIComponent(kbId)}`,
@@ -52,6 +83,10 @@ export async function deleteKnowledgeBase(kbId: string) {
 export const knowledgeBaseService = {
   fetchTree: fetchKnowledgeBaseTree,
   fetchDetail,
+  fetchIndexVersions,
+  rebuildIndexVersion,
+  activateIndexVersion,
+  deleteIndexVersion,
   updateKnowledgeBase,
   deleteKnowledgeBase,
 };

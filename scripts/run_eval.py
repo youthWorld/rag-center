@@ -64,6 +64,7 @@ def build_parser() -> argparse.ArgumentParser:
         "score", help="Score saved raw contexts without retrieving again."
     )
     score_parser.add_argument("--run-dir", type=Path, required=True)
+    score_parser.add_argument("--missing-only", action="store_true")
 
     report_parser = subparsers.add_parser(
         "report", help="Render a report from saved metrics without external calls."
@@ -108,7 +109,8 @@ def main() -> int:
             dataset_path = _resolve_project_path(experiment["dataset"])
             dataset = load_and_validate_dataset(dataset_path)
             api_key = (
-                os.getenv("EVAL_API_KEY") or os.getenv("RAG_CENTER_API_KEY")
+                os.getenv("EVAL_API_KEY")
+                or os.getenv("RAG_CENTER_API_KEY")
                 or Settings().eval_api_key
             )
             if not api_key:
@@ -149,7 +151,7 @@ def main() -> int:
         )
     if args.command == "score":
         try:
-            comparison = score_run(args.run_dir)
+            comparison = score_run(args.run_dir, missing_only=args.missing_only)
         except (OSError, ValueError) as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 1

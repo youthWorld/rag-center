@@ -24,6 +24,7 @@ export type KnowledgeBaseTreeItem = {
   description?: string | null;
   created_at: string;
   documents: KnowledgeBaseTreeDocument[];
+  active_index_version?: string;
 };
 
 export type KnowledgeBaseDetailData = {
@@ -34,6 +35,22 @@ export type KnowledgeBaseDetailData = {
   document_count: number;
   created_at: string;
   updated_at: string;
+  active_index_version?: string;
+};
+
+export type IndexVersion = {
+  version: string;
+  status: "building" | "ready" | "active" | "failed" | "archived";
+  document_count: number;
+  chunk_count: number;
+  error_message?: string | null;
+  created_at: string;
+};
+
+export type IndexVersionList = {
+  kb_id: string;
+  active_index_version: string;
+  versions: IndexVersion[];
 };
 
 export type UpdateKnowledgeBaseRequest = {
@@ -148,7 +165,16 @@ export type RetrievedChunk = {
   bm25_score?: number | null;
   vector_rank?: number | null;
   bm25_rank?: number | null;
-  retrieval_source: "vector" | "bm25" | "hybrid";
+  retrieval_source: "vector" | "bm25" | "hybrid" | "graph";
+  index_version?: string | null;
+  section_id?: string | null;
+  parent_section_id?: string | null;
+  order_index?: number | null;
+  context?: {
+    content: string;
+    chunk_ids: string[];
+    sources: Array<{chunk_id: string; relation: "anchor" | "previous" | "next" | "same_section" | "parent_section" | "reference"; content?: string}>;
+  } | null;
   rerank_score?: number | null;
   metadata?: {
     heading_path?: string | null;
@@ -163,6 +189,10 @@ export type RetrievalMetadata = {
   top_k?: number;
   latency_ms?: number;
   vector_store?: string;
+  index_version?: string;
+  index_versions?: Record<string, string>;
+  graph_injection?: {executed?: boolean; graph_injected_count?: number; graph_selected_count?: number; latency_ms?: number; degraded?: boolean; error?: string | null};
+  context_expansion?: {executed?: boolean; supplemental_chunk_count?: number; latency_ms?: number; degraded?: boolean; error?: string | null};
   retrieval?: {
     mode?: RetrievalMode;
     multi_kb?: boolean;

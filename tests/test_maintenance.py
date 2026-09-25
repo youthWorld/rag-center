@@ -144,6 +144,7 @@ async def test_llm_logging_covers_request_and_response(caplog) -> None:
     assert result == {"answer": "ok"}
     assert any("LLM_REQUEST" in message and "test-model" in message for message in messages)
     assert any("LLM_RESPONSE" in message and "answer" in message for message in messages)
+    assert all("hello" not in message for message in messages)
 
 
 @pytest.mark.asyncio

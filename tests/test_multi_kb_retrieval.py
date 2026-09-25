@@ -249,6 +249,7 @@ async def test_multi_kb_retrieve_processes_query_once_and_fuses_parallel_candida
     assert {chunk.kb_id for chunk in response.retrieved_chunks} == {"kb-a", "kb-b"}
     assert response.kb_id == "kb-a"
     assert response.kb_ids == ["kb-a", "kb-b"]
+    assert response.metadata["index_versions"] == {"kb-a": "v1", "kb-b": "v1"}
     assert response.metadata["retrieval"] == {
         "mode": "vector",
         "fusion": "rrf",
@@ -263,6 +264,13 @@ async def test_multi_kb_retrieve_processes_query_once_and_fuses_parallel_candida
         "multi_kb": True,
         "kb_count": 2,
         "per_kb_top_k": 10,
+        "per_kb_metadata": {
+            "kb-a": {"index_version": "v1"},
+            "kb-b": {"index_version": "v1"},
+        },
+        "graph_injected_count": 0,
+        "graph_selected_count": 0,
+        "graph_injection_latency_ms": 0,
     }
     assert log_repository.create.await_args.kwargs["kb_id"] == "kb-a"
     assert log_repository.create.await_args.kwargs["kb_ids"] == ["kb-a", "kb-b"]

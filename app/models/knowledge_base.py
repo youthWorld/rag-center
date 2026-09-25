@@ -10,6 +10,7 @@ from app.utils.id_generator import generate_id
 
 if TYPE_CHECKING:
     from app.models.document import Document
+    from app.models.index_version import KnowledgeBaseIndexVersion
 
 
 class KnowledgeBase(Base):
@@ -31,5 +32,11 @@ class KnowledgeBase(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
     )
+    active_index_version: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="v1", server_default=text("'v1'")
+    )
 
     documents: Mapped[list["Document"]] = relationship(back_populates="knowledge_base")
+    index_versions: Mapped[list["KnowledgeBaseIndexVersion"]] = relationship(
+        back_populates="knowledge_base", cascade="all, delete-orphan"
+    )
