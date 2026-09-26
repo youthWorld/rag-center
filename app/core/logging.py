@@ -27,6 +27,9 @@ T = TypeVar("T")
 
 REQUEST_ID_HEADER = "X-Request-ID"
 _request_id_context: ContextVar[str | None] = ContextVar("request_id", default=None)
+_research_retrieval_context: ContextVar[bool] = ContextVar(
+    "research_retrieval", default=False
+)
 _configuration_lock = threading.Lock()
 _queue_listener: logging.handlers.QueueListener | None = None
 _queue_handler: logging.handlers.QueueHandler | None = None
@@ -61,6 +64,26 @@ def request_context(request_id: str | None = None):
         yield _request_id_context.get()
     finally:
         _request_id_context.reset(token)
+
+
+@contextmanager
+def research_retrieval_log_scope():
+    """Hide subqueries from ordinary retrieval logs inside Research tasks."""
+    token = _research_retrieval_context.set(True)
+    try:
+        yield
+    finally:
+        _research_retrieval_context.reset(token)
+
+
+class ResearchRetrievalLogFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        if _research_retrieval_context.get() and record.name == "app.services.rag_service":
+            event = str(record.msg).split(" |", 1)[0]
+            record.msg = f"{event} | research retrieval details redacted"
+            record.args = ()
+            record.exc_info = None
+        return True
 
 
 class RequestIdFilter(logging.Filter):
@@ -275,6 +298,7 @@ def configure_logging(settings: Any | None = None) -> None:
         queue_handler = logging.handlers.QueueHandler(log_queue)
         queue_handler.setLevel(level)
         queue_handler.addFilter(RequestIdFilter())
+        queue_handler.addFilter(ResearchRetrievalLogFilter())
         queue_handler._rag_center_handler = True  # type: ignore[attr-defined]
         _queue_handler = queue_handler
 
@@ -428,6 +452,7 @@ async def log_llm_call(
     logger: logging.Logger | None = None,
     response_formatter: Callable[[T], Any] | None = None,
     max_length: int = 2000,
+    safe_error: bool = False,
 ) -> T:
     """Run an async model operation with request, response, latency, and error logs."""
 
@@ -441,14 +466,22 @@ async def log_llm_call(
     try:
         response = await operation()
     except Exception as exception:
-        active_logger.exception(
-            "LLM_ERROR | model=%s | cost_ms=%.2f | exception_type=%s | error=%s | prompt=%s",
-            model,
-            (time.perf_counter() - started) * 1000,
-            type(exception).__name__,
-            str(exception),
-            _format_llm_prompt(prompt, max_length=max_length),
-        )
+        if safe_error or _research_retrieval_context.get():
+            active_logger.error(
+                "LLM_ERROR | model=%s | cost_ms=%.2f | exception_type=%s",
+                model,
+                (time.perf_counter() - started) * 1000,
+                type(exception).__name__,
+            )
+        else:
+            active_logger.exception(
+                "LLM_ERROR | model=%s | cost_ms=%.2f | exception_type=%s | error=%s | prompt=%s",
+                model,
+                (time.perf_counter() - started) * 1000,
+                type(exception).__name__,
+                str(exception),
+                _format_llm_prompt(prompt, max_length=max_length),
+            )
         raise
 
     rendered_response = response_formatter(response) if response_formatter else response
@@ -497,7 +530,11 @@ async def request_logging_middleware(
         "API_REQUEST | method=%s | url=%s | body=%s",
         details["method"],
         details["url"],
-        format_log_value(body, max_length=max_length),
+        (
+            f"<research request bytes={len(body)}>"
+            if request.url.path == "/api/v1/rag/research"
+            else format_log_value(body, max_length=max_length)
+        ),
     )
 
     try:
@@ -535,7 +572,11 @@ async def request_logging_middleware(
         details["url"],
         response.status_code,
         (time.perf_counter() - started) * 1000,
-        format_log_value(rendered_body, max_length=max_length),
+        (
+            f"<research response bytes={len(rendered_body)}>"
+            if request.url.path == "/api/v1/rag/research"
+            else format_log_value(rendered_body, max_length=max_length)
+        ),
     )
     _request_id_context.reset(request_token)
     return response

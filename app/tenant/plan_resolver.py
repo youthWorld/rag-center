@@ -18,6 +18,7 @@ class PlanFeatures:
     rerank_allowed: bool
     query_rewrite_allowed: bool
     evidence_allowed: bool
+    research_allowed: bool
 
 
 @dataclass(frozen=True, slots=True)

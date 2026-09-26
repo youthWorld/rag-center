@@ -108,7 +108,6 @@ def _rag_service(plan: str, *, keyword: bool = False) -> RagService:
         knowledge_base_repository=SimpleNamespace(
             get_by_id=AsyncMock(return_value=SimpleNamespace(id="kb-test"))
         ),
-        retrieval_log_repository=SimpleNamespace(create=AsyncMock()),
         embedding_provider=FakeEmbeddingProvider(),
         vector_store=FakeVectorStore(),
         keyword_search_provider=FakeKeywordSearchProvider() if keyword else None,

@@ -111,6 +111,8 @@ class EvidenceItem(BaseModel):
     content: str
     source: str
     retrieved_rank: int | None = None
+    rounds: list[int] = Field(default_factory=list)
+    query_ids: list[str] = Field(default_factory=list)
 
 
 class EvidenceGroupItem(BaseModel):

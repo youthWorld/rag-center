@@ -5,6 +5,7 @@ import {
   Clock3,
   Database,
   BookOpenCheck,
+  BrainCircuit,
   FileSearch,
   Gauge,
   LoaderCircle,
@@ -34,7 +35,7 @@ import {
 } from "../lib/tenant-plan";
 import { authService } from "../services/authService";
 import { knowledgeBaseService } from "../services/knowledge-base";
-import { ragService, type RetrievePayload } from "../services/rag";
+import { ragService, type ResearchPayload, type RetrievePayload } from "../services/rag";
 import type {
   AuthMeData,
   EvidencePack,
@@ -44,6 +45,7 @@ import type {
   RetrieveProfile,
   RetrievalMode,
   RetrievedChunk,
+  ResearchData,
 } from "../types";
 
 const retrievalModes: Array<{ value: RetrievalMode; label: string; description: string }> = [
@@ -59,9 +61,12 @@ const retrievalProfiles: Array<{ value: RetrieveProfile; label: string; descript
   { value: "custom", label: "自定义", description: "手动调整高级检索参数" },
 ];
 
+type DebugMode = "single" | "research";
+
 export function RetrievePage() {
   const [searchParams] = useSearchParams();
   const initialKbId = searchParams.get("kb_id")?.trim() ?? "";
+  const [debugMode, setDebugMode] = useState<DebugMode>("single");
   const [selectedKbIds, setSelectedKbIds] = useState<string[]>(() => (initialKbId ? [initialKbId] : []));
   const [query, setQuery] = useState("");
   const [profile, setProfile] = useState<RetrieveProfile>("balanced");
@@ -77,6 +82,7 @@ export function RetrievePage() {
   const [evidenceEnabled, setEvidenceEnabled] = useState(false);
   const [evidenceMaxItems, setEvidenceMaxItems] = useState("8");
   const [result, setResult] = useState<RagRetrieveResponse | null>(null);
+  const [researchResult, setResearchResult] = useState<ResearchData | null>(null);
   const [isRunning, setIsRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [feedbackScore, setFeedbackScore] = useState<number | null>(null);
@@ -84,7 +90,6 @@ export function RetrievePage() {
   const [feedbackMessage, setFeedbackMessage] = useState<string | null>(null);
   const [feedbackError, setFeedbackError] = useState<string | null>(null);
   const [isSubmittingFeedback, setIsSubmittingFeedback] = useState(false);
-  const [feedbackSubmitted, setFeedbackSubmitted] = useState(false);
 
   const authQuery = useQuery<AuthMeData>({
     queryKey: ["auth-me"],
@@ -97,7 +102,7 @@ export function RetrievePage() {
   const versionQuery = useQuery({
     queryKey: ["index-versions", selectedKbIds],
     queryFn: () => knowledgeBaseService.fetchIndexVersions(selectedKbIds[0]),
-    enabled: selectedKbIds.length === 1,
+    enabled: debugMode === "single" && selectedKbIds.length === 1,
   });
   const tenantInfo = authQuery.data;
   const knowledgeBases = useMemo(
@@ -108,6 +113,9 @@ export function RetrievePage() {
     ? getMaxKnowledgeBasesPerRetrieve(tenantInfo.plan, tenantInfo.limits.max_kb_per_retrieve)
     : 5;
   const overPlanLimit = selectedKbIds.length > maxKbPerRetrieve;
+  const activeResult = debugMode === "research" ? researchResult : result;
+  const feedbackTraceId = debugMode === "research" ? researchResult?.metadata.trace_id : result?.metadata.trace_id;
+  const feedbackLogId = debugMode === "research" ? researchResult?.metadata.log_id : result?.metadata.log_id;
   const visibleRetrievalModes = tenantInfo?.features.hybrid_allowed
     ? retrievalModes
     : retrievalModes.filter((item) => item.value !== "hybrid");
@@ -137,11 +145,28 @@ export function RetrievePage() {
     });
   }, [knowledgeBases]);
 
+  const clearDebugResults = () => {
+    setResult(null);
+    setResearchResult(null);
+    setFeedbackScore(null);
+    setFeedbackComment("");
+    setFeedbackMessage(null);
+    setFeedbackError(null);
+  };
+
+  const switchDebugMode = (nextMode: DebugMode) => {
+    if (nextMode === debugMode) return;
+    setDebugMode(nextMode);
+    clearDebugResults();
+    setError(null);
+  };
+
   const toggleKnowledgeBase = (kbId: string) => {
     setIndexVersion("");
     setSelectedKbIds((current) =>
       current.includes(kbId) ? current.filter((currentId) => currentId !== kbId) : [...current, kbId],
     );
+    clearDebugResults();
     setError(null);
   };
 
@@ -159,6 +184,33 @@ export function RetrievePage() {
       setError(authQuery.isError ? getApiErrorMessage(authQuery.error) : "正在读取当前租户的套餐能力，请稍候。");
       return;
     }
+    if (selectedKbIds.length > maxKbPerRetrieve) {
+      setError("当前套餐最多支持 " + maxKbPerRetrieve + " 个库联合检索，请减少勾选数量。");
+      return;
+    }
+
+    if (debugMode === "research") {
+      if (!tenantInfo.features.research_allowed) {
+        setError("当前套餐不支持 Research，请升级到 Pro 套餐。");
+        return;
+      }
+      const payload: ResearchPayload = {
+        ...(selectedKbIds.length === 1 ? { kb_id: selectedKbIds[0] } : { kb_ids: selectedKbIds }),
+        user_id: "debug_user",
+        query: normalizedQuery,
+      };
+      clearDebugResults();
+      setIsRunning(true);
+      try {
+        setResearchResult(await ragService.research(payload));
+      } catch (requestError) {
+        setError(getApiErrorMessage(requestError));
+      } finally {
+        setIsRunning(false);
+      }
+      return;
+    }
+
     if (!tenantInfo.features.allowed_profiles.includes(profile)) {
       setError("当前套餐不支持所选检索档位，请先升级套餐。");
       return;
@@ -224,12 +276,7 @@ export function RetrievePage() {
         : { enabled: false };
     }
 
-    setResult(null);
-    setFeedbackScore(null);
-    setFeedbackComment("");
-    setFeedbackMessage(null);
-    setFeedbackError(null);
-    setFeedbackSubmitted(false);
+    clearDebugResults();
     setIsRunning(true);
     try {
       setResult(await ragService.retrieve(payload));
@@ -257,12 +304,36 @@ export function RetrievePage() {
           </div>
           <h1 className="text-balance text-3xl font-bold tracking-[-0.04em] text-ink md:text-[40px]">检索调试</h1>
           <p className="mt-3 max-w-[680px] text-sm leading-6 text-muted md:text-[15px]">
-            用一条真实 query 检查召回内容、各路分数、融合结果和服务端耗时。
+            {debugMode === "research"
+              ? "用受控 Research 检查查询计划、补证轮次、证据包和可追溯回答。"
+              : "用一条真实 query 检查召回内容、各路分数、融合结果和服务端耗时。"}
           </p>
         </div>
-        <div className="flex items-center gap-2 rounded-xl border border-moss/15 bg-moss/5 px-3.5 py-3 text-xs font-semibold text-moss">
-          <FileSearch size={16} />
-          user_id 固定为 debug_user
+        <div className="flex flex-col items-stretch gap-3 sm:items-end">
+          <div className="flex rounded-xl border border-line bg-white p-1 shadow-sm" role="tablist" aria-label="调试模式">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={debugMode === "single"}
+              onClick={() => switchDebugMode("single")}
+              className={"rounded-lg px-3 py-2 text-xs font-bold transition-colors " + (debugMode === "single" ? "bg-moss text-white" : "text-muted hover:text-ink")}
+            >
+              <FileSearch size={14} className="mr-1.5 inline" />Single Retrieve
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={debugMode === "research"}
+              onClick={() => switchDebugMode("research")}
+              className={"rounded-lg px-3 py-2 text-xs font-bold transition-colors " + (debugMode === "research" ? "bg-moss text-white" : "text-muted hover:text-ink")}
+            >
+              <BrainCircuit size={14} className="mr-1.5 inline" />Research
+            </button>
+          </div>
+          <div className="flex items-center gap-2 rounded-xl border border-moss/15 bg-moss/5 px-3.5 py-3 text-xs font-semibold text-moss">
+            <FileSearch size={16} />
+            user_id 固定为 debug_user
+          </div>
         </div>
       </section>
 
@@ -280,7 +351,7 @@ export function RetrievePage() {
           <ChevronDown size={18} className="text-muted transition-transform group-open:rotate-180" />
         </summary>
         <div className="space-y-6 px-5 py-6 sm:px-6">
-          <div className="rounded-xl border border-line bg-paper/70 p-4 sm:p-5">
+          {debugMode === "single" && <div className="rounded-xl border border-line bg-paper/70 p-4 sm:p-5">
             <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-start">
               <div>
                 <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-muted">检索档位</p>
@@ -334,7 +405,7 @@ export function RetrievePage() {
                 <span>{getApiErrorMessage(authQuery.error)}</span>
               </div>
             )}
-          </div>
+          </div>}
 
           <div className="rounded-xl border border-line bg-paper/70 p-4 sm:p-5">
             <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-start">
@@ -406,7 +477,7 @@ export function RetrievePage() {
             {knowledgeBases.length > 0 && selectedKbIds.length === 0 && (
               <p className="mt-3 text-xs font-semibold text-danger">请选择至少一个知识库。</p>
             )}
-            <div className="mt-4 space-y-1 text-xs">
+            {debugMode === "single" && <div className="mt-4 space-y-1 text-xs">
               <label htmlFor="index-version" className="font-semibold text-ink">索引版本</label>
               <select id="index-version" value={indexVersion} onChange={(event) => setIndexVersion(event.target.value)} className="block rounded-lg border border-line bg-white px-3 py-2">
                 <option value="">各知识库当前活动版本</option>
@@ -415,10 +486,29 @@ export function RetrievePage() {
                 ))}
               </select>
               {selectedKbIds.length !== 1 && <p className="text-muted">多库检索默认使用各库当前活动版本。</p>}
-            </div>
+            </div>}
           </div>
 
-          <div>
+          {debugMode === "research" && (
+            <div className="rounded-xl border border-moss/20 bg-moss/5 p-4 sm:p-5" data-testid="research-fixed-config">
+              <div className="flex items-start gap-3">
+                <div className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-moss/10 text-moss"><BrainCircuit size={17} /></div>
+                <div>
+                  <p className="text-sm font-bold text-ink">受控 Research 固定配置</p>
+                  <p className="mt-1 text-xs leading-5 text-muted">服务端固定执行 Planner → 并行检索 → Decider → 最多一轮补证 → Finalizer。</p>
+                </div>
+              </div>
+              <div className="mt-4 flex flex-wrap gap-2 text-xs">
+                <Badge>FAST: Planner / Decider</Badge>
+                <Badge>STRONG: Finalizer</Badge>
+                <Badge>Hybrid + Rerank Top10</Badge>
+                <Badge>Rewrite / 同义词关闭</Badge>
+                <Badge>最多 2 轮 / 3 个 LLM 调用</Badge>
+              </div>
+            </div>
+          )}
+
+          {debugMode === "single" && <div>
             <p className="border-b border-line pb-3 text-[10px] font-bold uppercase tracking-[0.16em] text-muted">检索参数</p>
             {profile === "custom" ? (
               <div className="mt-4 space-y-4">
@@ -517,9 +607,9 @@ export function RetrievePage() {
                 <span>高级参数由服务端预设展开，本次请求只提交 profile。</span>
               </div>
             )}
-          </div>
+          </div>}
 
-          <div>
+          {debugMode === "single" && <div>
             <p className="border-b border-line pb-3 text-[10px] font-bold uppercase tracking-[0.16em] text-muted">证据编排</p>
             <div className="mt-4 rounded-xl border border-line bg-paper/70 p-4 sm:p-5">
               <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -548,7 +638,7 @@ export function RetrievePage() {
                 </label>
               )}
             </div>
-          </div>
+          </div>}
         </div>
       </details>
 
@@ -559,14 +649,18 @@ export function RetrievePage() {
               <Search size={17} />
             </div>
             <div>
-              <h2 className="text-base font-bold">检索与召回</h2>
-              <p className="mt-1 text-xs text-muted">输入问题后查看每个 chunk 的召回来源和评分明细。</p>
+              <h2 className="text-base font-bold">{debugMode === "research" ? "受控 Research" : "检索与召回"}</h2>
+              <p className="mt-1 text-xs text-muted">{debugMode === "research" ? "输入问题后查看计划、补证、答案与证据。" : "输入问题后查看每个 chunk 的召回来源和评分明细。"}</p>
             </div>
           </div>
         </div>
         <form onSubmit={handleSubmit} className="px-5 py-6 sm:px-6">
           <FieldRow label="query" required alignTop>
-            <Textarea value={query} onChange={(event) => setQuery(event.target.value)} placeholder="例如：LangGraph 如何保存执行状态？" className="min-h-[132px]" />
+            <Textarea value={query} onChange={(event) => {
+              setQuery(event.target.value);
+              clearDebugResults();
+              setError(null);
+            }} placeholder="例如：LangGraph 如何保存执行状态？" className="min-h-[132px]" />
           </FieldRow>
           {error && (
             <div className="mt-5 flex items-start gap-2.5 rounded-xl border border-red-200 bg-red-50 px-3.5 py-3 text-xs leading-5 text-danger" role="alert">
@@ -582,14 +676,13 @@ export function RetrievePage() {
           </div>
         </form>
 
-        {result?.metadata.trace_id ? (
+        {feedbackTraceId && feedbackLogId ? (
           <FeedbackPanel
             score={feedbackScore}
             comment={feedbackComment}
             message={feedbackMessage}
             error={feedbackError}
             isSubmitting={isSubmittingFeedback}
-            submitted={feedbackSubmitted}
             onScoreChange={(value) => {
               setFeedbackScore(value);
               setFeedbackMessage(null);
@@ -601,12 +694,14 @@ export function RetrievePage() {
               setFeedbackError(null);
             }}
             onSubmit={async () => {
+              if (isSubmittingFeedback) return;
               if (!feedbackScore) {
                 setFeedbackError("请先选择 1～5 分。");
                 return;
               }
-              const traceId = result.metadata.trace_id;
-              if (!traceId) return;
+              const traceId = feedbackTraceId;
+              const logId = feedbackLogId;
+              if (!traceId || !logId) return;
               setIsSubmittingFeedback(true);
               setFeedbackMessage(null);
               setFeedbackError(null);
@@ -614,12 +709,11 @@ export function RetrievePage() {
                 const payload = {
                   trace_id: traceId,
                   score: feedbackScore,
-                  ...(result.metadata.log_id ? { log_id: result.metadata.log_id } : {}),
+                  log_id: logId,
                   ...(feedbackComment.trim() ? { comment: feedbackComment.trim() } : {}),
                 };
                 await ragService.submitFeedback(payload);
-                setFeedbackMessage(`已提交，已评 ${feedbackScore} 分`);
-                setFeedbackSubmitted(true);
+                setFeedbackMessage("反馈已保存，已评 " + feedbackScore + " 分");
               } catch (requestError) {
                 setFeedbackError(getApiErrorMessage(requestError));
               } finally {
@@ -627,13 +721,13 @@ export function RetrievePage() {
               }
             }}
           />
-        ) : result ? (
+        ) : activeResult ? (
           <div className="border-t border-line px-5 py-4 text-xs text-muted sm:px-6">
             Langfuse 未启用，反馈暂不可用。
           </div>
         ) : null}
 
-        <div className="border-t border-line px-5 py-5 sm:px-6">
+        {debugMode === "single" && <div className="border-t border-line px-5 py-5 sm:px-6">
           <div className="flex items-center justify-between gap-3">
             <div>
               <h3 className="text-sm font-bold">召回结果</h3>
@@ -662,12 +756,17 @@ export function RetrievePage() {
               </div>
             </div>
           )}
-        </div>
+        </div>}
       </Card>
 
-      <EvidencePackPanel result={result} isRunning={isRunning} requested={evidenceEnabled} />
-
-      <RunSummary result={result} isRunning={isRunning} />
+      {debugMode === "research" ? (
+        <ResearchResultPanel result={researchResult} isRunning={isRunning} />
+      ) : (
+        <>
+          <EvidencePackPanel result={result} isRunning={isRunning} requested={evidenceEnabled} />
+          <RunSummary result={result} isRunning={isRunning} />
+        </>
+      )}
     </div>
   );
 }
@@ -749,6 +848,135 @@ function EvidencePackPanel({ result, isRunning, requested }: { result: RagRetrie
   );
 }
 
+function ResearchResultPanel({ result, isRunning }: { result: ResearchData | null; isRunning: boolean }) {
+  if (isRunning) {
+    return <Card><div className="px-5 py-8 text-sm text-muted" role="status">Research 正在规划、检索并校验证据，请稍候...</div></Card>;
+  }
+  if (!result) {
+    return <Card><div className="px-5 py-8 text-sm text-muted">执行一次 Research 后显示答案、计划、轮次和证据包。</div></Card>;
+  }
+
+  const pack = result.evidence_pack;
+  const metadata = result.metadata;
+  const evidenceIds = new Set(pack.items.map((item) => item.evidence_id));
+  const aspectLabels = new Map(result.plan.aspects.map((aspect) => [
+    aspect.aspect_id, `${aspect.aspect_id}：${aspect.description}`,
+  ]));
+  const aspectOrder = new Map(result.plan.aspects.map((aspect, index) => [aspect.aspect_id, index]));
+  const formatAspects = (ids: string[]) => [...new Set(ids)]
+    .sort((left, right) => (aspectOrder.get(left) ?? Infinity) - (aspectOrder.get(right) ?? Infinity))
+    .map((id) => aspectLabels.get(id) ?? id).join("、");
+  const referenceRoles = new Map<string, string[]>();
+  for (const group of pack.groups) {
+    for (const reference of group.evidence) {
+      const roles = referenceRoles.get(reference.evidence_id) ?? [];
+      roles.push(group.aspect + "：" + reference.role);
+      referenceRoles.set(reference.evidence_id, roles);
+    }
+  }
+
+  return (
+    <div className="space-y-5" data-testid="research-result">
+      <Card>
+        <div className="border-b border-line px-5 py-5 sm:px-6"><h2 className="text-base font-bold">Query Plan</h2></div>
+        <div className="space-y-4 px-5 py-5 text-sm sm:px-6">
+          {result.plan.degraded && <p className="text-amber-800">Planner 降级：{result.plan.error ?? "使用保底计划"}</p>}
+          <div><h3 className="font-bold">要点</h3><ul className="mt-2 list-disc space-y-1 pl-5">{result.plan.aspects.map((aspect) => <li key={aspect.aspect_id}>{aspect.aspect_id}：{aspect.description}</li>)}</ul></div>
+          <div><h3 className="font-bold">首轮子查询</h3><ul className="mt-2 list-disc space-y-1 pl-5">{result.plan.initial_queries.map((item) => <li key={item.query_id}>{item.query_id}：{item.query}（{item.aspect_ids.join("、")}）</li>)}</ul></div>
+        </div>
+      </Card>
+
+      <Card>
+        <div className="border-b border-line px-5 py-5 sm:px-6"><h2 className="text-base font-bold">检索轮次与补证</h2></div>
+        <div className="space-y-4 px-5 py-5 sm:px-6">
+          {result.rounds.map((round) => {
+            const targetedAspectIds = round.tasks.flatMap((task) => task.aspect_ids);
+            return <section key={round.round} className="rounded-xl border border-line bg-paper/50 p-4 text-sm">
+              <h3 className="font-bold">第 {round.round} 轮 · {round.purpose === "initial" ? "首轮" : "补证"}</h3>
+              <p className="mt-1 text-xs text-muted">候选 {round.candidate_count} · 新增 {round.new_chunk_count} · {round.latency_ms}ms</p>
+              {round.purpose === "initial" && <div className="mt-3 rounded-lg border border-line bg-white px-3 py-2 text-xs" data-testid="research-first-round-missing">
+                <strong>{metadata.decider.degraded === true ? "首轮未确认覆盖的要点（Decider 降级）" : "首轮缺失要点"}：</strong>
+                {formatAspects(metadata.first_round_missing_aspect_ids) || "无"}
+              </div>}
+              {round.purpose === "supplement" && <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900" data-testid={`research-supplement-reason-${round.round}`}>
+                <p><strong>补证原因：</strong>首轮缺失要点：{formatAspects(metadata.first_round_missing_aspect_ids) || "无"}</p>
+                <p className="mt-1">本轮查询绑定的要点：{formatAspects(targetedAspectIds) || "未提供"}。具体对应关系见下方查询。</p>
+              </div>}
+              <ul className="mt-3 space-y-3">{round.tasks.map((task) => <li key={task.query_id} className="rounded-lg border border-line bg-white p-3">
+                <div className="font-semibold">{task.query_id}：{task.query}</div>
+                <div className="mt-1 text-xs text-muted">绑定要点：{formatAspects(task.aspect_ids) || "未提供"}</div>
+                <div className="mt-1 text-xs text-muted">{task.success ? "成功" : "失败"} · {task.latency_ms}ms · 命中 {task.chunk_count} · 新增 {task.new_chunk_count}</div>
+                {(task.degraded || task.error) && <p className="mt-1 text-xs text-amber-800">{task.error ?? "检索已降级"}</p>}
+              </li>)}</ul>
+            </section>;
+          })}
+        </div>
+      </Card>
+
+      <Card>
+        <div className="border-b border-line px-5 py-5 sm:px-6">
+          <h2 className="text-base font-bold">Research 回答</h2>
+          <p className="mt-1 text-xs text-muted">引用编号由后端校验，可点击定位到下方原文证据。</p>
+        </div>
+        <div className="space-y-4 px-5 py-5 sm:px-6">
+          {metadata.finalizer.degraded === true && (
+            <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800" role="alert">
+              Finalizer 已降级：{String(metadata.finalizer.error ?? "未生成有效回答")}。以下保留最近一次已校验的证据包。
+            </div>
+          )}
+          {result.answer ? (
+            <div className="break-words text-sm leading-7 text-ink" data-testid="research-answer">
+              <ReactMarkdown remarkPlugins={[remarkGfm]} components={{
+                ...markdownComponents,
+                a: ({ href, children }) => href?.startsWith("#research-evidence-")
+                  ? <a href={href} className="font-bold text-moss underline underline-offset-2">{children}</a>
+                  : <a href={href} target="_blank" rel="noreferrer" className="font-semibold text-moss underline">{children}</a>,
+              }}>
+                {result.answer.replace(/\[E(\d+)\]/g, (match, number: string) =>
+                  evidenceIds.has("E" + number) ? "[[E" + number + "]](#research-evidence-E" + number + ")" : match)}
+              </ReactMarkdown>
+            </div>
+          ) : <p className="text-sm text-muted">本次未生成回答，请查看已校验证据与降级原因。</p>}
+          <div className="flex flex-wrap gap-2 text-xs">
+            <Badge>证据状态：{pack.status}</Badge>
+            <Badge>停止原因：{metadata.stop_reason}</Badge>
+            {metadata.degraded && <Badge className="border-amber-200 bg-amber-50 text-amber-700">degraded</Badge>}
+          </div>
+          {pack.missing_aspects.length > 0 && <p className="text-xs text-amber-800">缺失要点：{pack.missing_aspects.join("、")}</p>}
+        </div>
+      </Card>
+
+      <Card>
+        <div className="border-b border-line px-5 py-5 sm:px-6"><h2 className="text-base font-bold">Research 证据包</h2></div>
+        <div className="space-y-4 px-5 py-5 sm:px-6">
+          {pack.groups.map((group) => <div key={group.aspect} className="text-sm">
+            <strong>{group.aspect}</strong> · {group.covered ? "covered" : "missing"} · {group.evidence.map((reference) => reference.evidence_id + " (" + reference.role + ")").join("、") || "无证据"}
+          </div>)}
+          {pack.items.length === 0 && <p className="text-sm text-muted">没有已校验的证据。</p>}
+          {pack.items.map((item) => <article key={item.evidence_id} id={"research-evidence-" + item.evidence_id} className="scroll-mt-6 rounded-xl border border-line bg-paper/50 p-4 target:border-moss target:bg-moss/5 target:ring-2 target:ring-moss/40" tabIndex={-1}>
+            <div className="flex flex-wrap items-center gap-2"><Badge className="border-moss/20 bg-moss/8 text-moss">{item.evidence_id}</Badge><h3 className="text-sm font-bold">{item.title}</h3></div>
+            {item.heading_path && <p className="mt-1 text-xs text-muted">{item.heading_path}</p>}
+            <p className="mt-2 text-xs text-muted">{(referenceRoles.get(item.evidence_id) ?? []).join("、")} · 来源 {item.source} · 轮次 {(item.rounds ?? []).join("、") || "—"} · 子查询 {(item.query_ids ?? []).join("、") || "—"}</p>
+            <div className="mt-3 border-t border-line pt-3"><MarkdownContent content={item.content} /></div>
+            <code className="mt-3 block break-all text-[10px] text-muted">{item.kb_id} / {item.index_version} / {item.document_id} / {item.chunk_id}</code>
+          </article>)}
+        </div>
+      </Card>
+
+      <Card>
+        <div className="border-b border-line px-5 py-5 sm:px-6"><h2 className="text-base font-bold">运行摘要</h2></div>
+        <div className="space-y-3 px-5 py-5 text-xs text-muted sm:px-6">
+          <p>耗时 {metadata.latency_ms}ms · {metadata.round_count} 轮 · {metadata.retrieval_task_count} 个检索任务 · {metadata.llm_call_count} 次 Research LLM 调用 · Token 输入 {metadata.input_tokens} / 输出 {metadata.output_tokens}</p>
+          <p>索引版本：{Object.entries(metadata.index_versions).map(([kb, version]) => kb + "：" + version).join("、")}</p>
+          <p>Research ID：{metadata.research_id} · Trace ID：{metadata.trace_id ?? "未启用"} · Log ID：{metadata.log_id}</p>
+          {metadata.stages.map((stage) => <p key={stage.stage}>{stage.stage} · {stage.role} · {stage.model} · {stage.latency_ms}ms · Token {stage.input_tokens}/{stage.output_tokens}{stage.degraded ? " · degraded：" + (stage.error ?? "未知") : ""}</p>)}
+          {metadata.errors.length > 0 && <p className="text-amber-800">降级原因：{metadata.errors.join("、")}</p>}
+        </div>
+      </Card>
+    </div>
+  );
+}
+
 function formatEvidenceError(errorCode?: string | null, fallback?: string | null) {
   const labels: Record<string, string> = {
     LLM_TIMEOUT: "Evidence 模型调用超时",
@@ -796,7 +1024,6 @@ function FeedbackPanel({
   message,
   error,
   isSubmitting,
-  submitted,
   onScoreChange,
   onCommentChange,
   onSubmit,
@@ -806,7 +1033,6 @@ function FeedbackPanel({
   message: string | null;
   error: string | null;
   isSubmitting: boolean;
-  submitted: boolean;
   onScoreChange: (score: number) => void;
   onCommentChange: (comment: string) => void;
   onSubmit: () => Promise<void>;
@@ -829,7 +1055,7 @@ function FeedbackPanel({
                 aria-checked={score === value}
                 aria-label={`${value} 分`}
                 title={`${value} 分`}
-                disabled={isSubmitting || submitted}
+                disabled={isSubmitting}
                 onClick={() => onScoreChange(value)}
                 className={`grid h-9 w-9 place-items-center rounded-lg transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
                   active
@@ -850,11 +1076,11 @@ function FeedbackPanel({
           placeholder="备注（可选），例如：排第三的 chunk 才是对的"
           className="min-h-[88px] bg-white"
           maxLength={2000}
-          disabled={isSubmitting || submitted}
+          disabled={isSubmitting}
         />
-        <Button type="button" size="sm" disabled={isSubmitting || submitted} onClick={onSubmit}>
-          {isSubmitting ? <LoaderCircle size={15} className="animate-spin" /> : submitted ? <CheckCircle2 size={15} /> : <Send size={15} />}
-          {isSubmitting ? "提交中..." : submitted ? "已提交" : "提交反馈"}
+        <Button type="button" size="sm" disabled={isSubmitting} onClick={onSubmit}>
+          {isSubmitting ? <LoaderCircle size={15} className="animate-spin" /> : <Send size={15} />}
+          {isSubmitting ? "提交中..." : "提交反馈"}
         </Button>
       </div>
       {message && <p className="mt-3 text-xs font-semibold text-moss" role="status">{message}</p>}

@@ -3,7 +3,7 @@ from pydantic import BaseModel, Field, field_validator
 
 class FeedbackRequest(BaseModel):
     trace_id: str = Field(min_length=1, max_length=64)
-    log_id: str | None = Field(default=None, min_length=1, max_length=36)
+    log_id: str = Field(min_length=1, max_length=36)
     score: int = Field(ge=1, le=5)
     comment: str | None = Field(default=None, max_length=2000)
 
@@ -15,7 +15,15 @@ class FeedbackRequest(BaseModel):
             raise ValueError("must not be blank")
         return normalized
 
-    @field_validator("log_id", "comment")
+    @field_validator("log_id")
+    @classmethod
+    def normalize_log_id(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("must not be blank")
+        return normalized
+
+    @field_validator("comment")
     @classmethod
     def normalize_optional_text(cls, value: str | None) -> str | None:
         if value is None:
@@ -27,5 +35,5 @@ class FeedbackRequest(BaseModel):
 class FeedbackData(BaseModel):
     feedback_id: str
     trace_id: str
-    log_id: str | None
+    log_id: str
     score: int

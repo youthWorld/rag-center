@@ -129,8 +129,9 @@ async def test_business_routes_are_exposed() -> None:
         "/api/v1/knowledge-bases/{kb_id}/index-versions/rebuild",
         "/api/v1/knowledge-bases/{kb_id}/index-versions/{version}",
         "/api/v1/knowledge-bases/{kb_id}/index-versions/{version}/activate",
-        "/api/v1/rag/feedback",
-        "/api/v1/rag/retrieve",
+            "/api/v1/rag/feedback",
+            "/api/v1/rag/research",
+            "/api/v1/rag/retrieve",
     ]
 
 

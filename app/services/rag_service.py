@@ -25,7 +25,6 @@ from app.providers.rerank.noop import NoopRerankProvider
 from app.providers.vectorstores.base import VectorStore
 from app.repositories.index_version_repository import IndexVersionRepository
 from app.repositories.knowledge_base_repository import KnowledgeBaseRepository
-from app.repositories.retrieval_log_repository import RetrievalLogRepository
 from app.schemas.hybrid_search import RetrievalMode, RetrievalOptions
 from app.schemas.rag import (
     MULTI_KB_MAX,
@@ -67,7 +66,6 @@ class RagService:
         session: AsyncSession,
         settings: Settings,
         knowledge_base_repository: KnowledgeBaseRepository,
-        retrieval_log_repository: RetrievalLogRepository,
         embedding_provider: EmbeddingProvider,
         vector_store: VectorStore,
         keyword_search_provider: KeywordSearchProvider | None = None,
@@ -85,7 +83,6 @@ class RagService:
         self.session = session
         self.settings = settings
         self.knowledge_base_repository = knowledge_base_repository
-        self.retrieval_log_repository = retrieval_log_repository
         self.embedding_provider = embedding_provider
         self.vector_store = vector_store
         self.keyword_search_provider = keyword_search_provider
@@ -118,6 +115,7 @@ class RagService:
         tenant: Any | None = None,
         plan_context: PlanContext | None = None,
     ) -> RagRetrieveResponse:
+        log_id = generate_id()
         self._validate_query(request.query)
         kb_ids = self._resolve_kb_ids(request)
         self.logger.info(
@@ -164,6 +162,7 @@ class RagService:
             profile=profile,
             plan=plan.plan,
             raw_query=request.query,
+            log_id=log_id,
             enabled=request.observability_enabled is not False,
         )
         with observability:
@@ -179,6 +178,7 @@ class RagService:
                 query_rewrite_enabled=query_rewrite_enabled,
                 evidence_options=evidence_options,
                 observability=observability,
+                log_id=log_id,
             )
 
     async def _retrieve(
@@ -195,8 +195,11 @@ class RagService:
         query_rewrite_enabled: bool,
         evidence_options: EvidenceOptions,
         observability: RetrieveObservability,
+        internal_retrieve_once: bool = False,
+        frozen_index_versions: dict[str, str] | None = None,
+        log_id: str | None = None,
     ) -> RagRetrieveResponse:
-        if self.rate_limit_service is not None:
+        if self.rate_limit_service is not None and not internal_retrieve_once:
             await self.rate_limit_service.check_retrieve(tenant_id, plan)
 
         if len(kb_ids) > 1:
@@ -212,6 +215,9 @@ class RagService:
                 query_rewrite_enabled=query_rewrite_enabled,
                 evidence_options=evidence_options,
                 observability=observability,
+                internal_retrieve_once=internal_retrieve_once,
+                frozen_index_versions=frozen_index_versions,
+                log_id=log_id,
             )
 
         knowledge_base = await self.knowledge_base_repository.get_by_id(
@@ -220,11 +226,19 @@ class RagService:
         )
         if knowledge_base is None:
             raise KnowledgeBaseNotFoundError()
-        index_version = await self._resolve_index_version(
-            request.index_version,
-            knowledge_base=knowledge_base,
-            tenant_id=tenant_id,
-        )
+        if frozen_index_versions is not None:
+            index_version = frozen_index_versions.get(str(knowledge_base.id), "")
+            if not index_version:
+                raise ServiceConfigurationError(
+                    internal_message="frozen index version is missing",
+                    context={"kb_id": str(knowledge_base.id)},
+                )
+        else:
+            index_version = await self._resolve_index_version(
+                request.index_version,
+                knowledge_base=knowledge_base,
+                tenant_id=tenant_id,
+            )
 
         query_processing = await self.query_pipeline.process(
             request.query,
@@ -470,27 +484,11 @@ class RagService:
         if evidence_result.metadata.enabled:
             application_model_call_details["evidence"] = int(evidence_result.metadata.executed)
         serialized_chunks = [chunk.model_dump() for chunk in retrieved_chunks]
-        retrieval_log = await self.retrieval_log_repository.create(
-            tenant_id=tenant_id,
-            kb_id=knowledge_base.id,
-            user_id=request.user_id,
-            query=request.query,
-            trace_id=observability.trace_id,
-            profile=profile,
-            search_query=search_query,
-            effective_query=query_processing.effective_query,
-            retrieved_chunks=serialized_chunks,
-            retrieval_metadata={**retrieval_metadata, "evidence": evidence_metadata},
-            top_k=top_k,
-            vector_store=self.settings.vector_store,
-            latency_ms=latency_ms,
-        )
-        raw_log_id = getattr(retrieval_log, "id", None)
-        log_id = raw_log_id if isinstance(raw_log_id, str) and raw_log_id else generate_id()
-        await self.session.commit()
-        observability.finish(log_id=log_id, chunks=serialized_chunks)
-        if self.rate_limit_service is not None:
-            await self.rate_limit_service.record_retrieve_success(tenant_id)
+        resolved_log_id = log_id or generate_id()
+        if not internal_retrieve_once:
+            observability.finish(log_id=resolved_log_id, chunks=serialized_chunks)
+            if self.rate_limit_service is not None:
+                await self.rate_limit_service.record_retrieve_success(tenant_id)
         self.logger.info(
             "BUSINESS_EVENT | event=rag_retrieval_completed | tenant_id=%s | "
             "kb_id=%s | query=%s | vector_top_k=%s | bm25_top_k=%s | "
@@ -516,7 +514,7 @@ class RagService:
             retrieved_chunks=retrieved_chunks,
             evidence_pack=evidence_result.pack,
             metadata={
-                "log_id": log_id,
+                "log_id": resolved_log_id,
                 "trace_id": observability.trace_id,
                 "top_k": top_k,
                 "latency_ms": latency_ms,
@@ -565,6 +563,11 @@ class RagService:
                 },
                 "application_model_calls": sum(application_model_call_details.values()),
                 "application_model_call_details": application_model_call_details,
+                **(
+                    {"_candidate_snapshot": base_candidate_snapshot}
+                    if internal_retrieve_once
+                    else {}
+                ),
             },
         )
 
@@ -582,17 +585,32 @@ class RagService:
         query_rewrite_enabled: bool,
         evidence_options: EvidenceOptions,
         observability: RetrieveObservability,
+        internal_retrieve_once: bool = False,
+        frozen_index_versions: dict[str, str] | None = None,
+        log_id: str | None = None,
     ) -> RagRetrieveResponse:
         knowledge_bases = await self._load_knowledge_bases(
             kb_ids=kb_ids,
             tenant_id=tenant_id,
         )
-        versions = {
-            str(kb.id): await self._resolve_index_version(
-                request.index_version, knowledge_base=kb, tenant_id=tenant_id
-            )
-            for kb in knowledge_bases
-        }
+        if frozen_index_versions is not None:
+            versions = {
+                str(kb.id): frozen_index_versions.get(str(kb.id), "")
+                for kb in knowledge_bases
+            }
+            missing = [kb_id for kb_id, version in versions.items() if not version]
+            if missing:
+                raise ServiceConfigurationError(
+                    internal_message="frozen index version is missing",
+                    context={"kb_ids": missing},
+                )
+        else:
+            versions = {
+                str(kb.id): await self._resolve_index_version(
+                    request.index_version, knowledge_base=kb, tenant_id=tenant_id
+                )
+                for kb in knowledge_bases
+            }
         query_processing = await self.query_pipeline.process(
             request.query,
             knowledge_base=knowledge_bases[0],
@@ -905,28 +923,11 @@ class RagService:
         if evidence_result.metadata.enabled:
             application_model_call_details["evidence"] = int(evidence_result.metadata.executed)
         serialized_chunks = [chunk.model_dump() for chunk in retrieved_chunks]
-        retrieval_log = await self.retrieval_log_repository.create(
-            tenant_id=tenant_id,
-            kb_id=kb_ids[0],
-            kb_ids=kb_ids,
-            user_id=request.user_id,
-            query=request.query,
-            trace_id=observability.trace_id,
-            profile=profile,
-            search_query=search_query,
-            effective_query=query_processing.effective_query,
-            retrieved_chunks=serialized_chunks,
-            retrieval_metadata={**retrieval_metadata, "evidence": evidence_metadata},
-            top_k=top_k,
-            vector_store=self.settings.vector_store,
-            latency_ms=latency_ms,
-        )
-        raw_log_id = getattr(retrieval_log, "id", None)
-        log_id = raw_log_id if isinstance(raw_log_id, str) and raw_log_id else generate_id()
-        await self.session.commit()
-        observability.finish(log_id=log_id, chunks=serialized_chunks)
-        if self.rate_limit_service is not None:
-            await self.rate_limit_service.record_retrieve_success(tenant_id)
+        resolved_log_id = log_id or generate_id()
+        if not internal_retrieve_once:
+            observability.finish(log_id=resolved_log_id, chunks=serialized_chunks)
+            if self.rate_limit_service is not None:
+                await self.rate_limit_service.record_retrieve_success(tenant_id)
         self.logger.info(
             "BUSINESS_EVENT | event=rag_retrieval_completed | tenant_id=%s | "
             "kb_ids=%s | query=%s | vector_top_k=%s | bm25_top_k=%s | "
@@ -952,7 +953,7 @@ class RagService:
             retrieved_chunks=retrieved_chunks,
             evidence_pack=evidence_result.pack,
             metadata={
-                "log_id": log_id,
+                "log_id": resolved_log_id,
                 "trace_id": observability.trace_id,
                 "top_k": top_k,
                 "latency_ms": latency_ms,
@@ -1001,6 +1002,11 @@ class RagService:
                 },
                 "application_model_calls": sum(application_model_call_details.values()),
                 "application_model_call_details": application_model_call_details,
+                **(
+                    {"_candidate_snapshot": base_candidate_snapshot}
+                    if internal_retrieve_once
+                    else {}
+                ),
             },
         )
 

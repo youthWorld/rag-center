@@ -30,7 +30,6 @@ from app.models import (  # noqa: E402
     Chunk,
     Document,
     KnowledgeBase,
-    RetrievalLog,
     Tenant,
 )
 from app.repositories.api_key_repository import ApiKeyRepository  # noqa: E402
@@ -342,10 +341,6 @@ async def cleanup() -> None:
     tenant_ids = [item.tenant_id for item in temporary_tenants]
     key_hashes = [item.key_hash for item in temporary_tenants]
     async with session_factory() as session:
-        if tracked_kb_ids:
-            await session.execute(
-                delete(RetrievalLog).where(RetrievalLog.kb_id.in_(tracked_kb_ids))
-            )
         if tracked_document_ids:
             await session.execute(
                 delete(Chunk).where(Chunk.document_id.in_(tracked_document_ids))

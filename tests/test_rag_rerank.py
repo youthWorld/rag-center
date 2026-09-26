@@ -5,10 +5,13 @@ import pytest
 
 from app.core.config import Settings
 from app.providers.embedding.base import EmbeddingProvider
+from app.providers.keyword_search.base import KeywordSearchProvider
 from app.providers.rerank.base import RerankProvider
 from app.providers.vectorstores.base import VectorStore
 from app.schemas.rag import RagRetrieveRequest
 from app.services.rag_service import RagService
+from app.services.retrieve_once_service import RetrieveOnceService
+from app.tenant.plan_resolver import PlanResolver
 
 
 class FakeEmbeddingProvider(EmbeddingProvider):
@@ -53,18 +56,28 @@ class FakeKnowledgeBaseRepository:
         return SimpleNamespace(id=kb_id)
 
 
-class FakeRetrievalLogRepository:
-    def __init__(self) -> None:
-        self.create = AsyncMock()
+class EmptyKeywordSearchProvider(KeywordSearchProvider):
+    async def add_chunks(self, chunks: list[dict]) -> None:
+        del chunks
+
+    async def keyword_search(self, *, query, tenant_id, kb_id, top_k=20, index_version=None):
+        del query, tenant_id, kb_id, top_k, index_version
+        return []
+
+    async def delete_by_document_id(self, document_id: str, *, index_version=None) -> None:
+        del document_id, index_version
 
 
 class FakeRerankProvider(RerankProvider):
-    def __init__(self, *, fail: bool = False) -> None:
+    def __init__(self, *, fail: bool = False, error: Exception | None = None) -> None:
         self.fail = fail
+        self.error = error
         self.calls: list[dict] = []
 
     async def rerank(self, *, query: str, chunks: list[dict], top_n: int) -> list[dict]:
         self.calls.append({"query": query, "chunks": chunks, "top_n": top_n})
+        if self.error is not None:
+            raise self.error
         if self.fail:
             raise RuntimeError("invalid JSON")
         ranked = list(reversed(chunks))
@@ -87,23 +100,21 @@ def _service(
         llm_provider="openai_compatible",
         llm_model="test-model",
     )
-    log_repository = FakeRetrievalLogRepository()
     service = RagService(
         session=SimpleNamespace(commit=AsyncMock()),
         settings=settings,
         knowledge_base_repository=FakeKnowledgeBaseRepository(),
-        retrieval_log_repository=log_repository,
         embedding_provider=FakeEmbeddingProvider(),
         vector_store=FakeVectorStore(),
         rerank_provider=rerank_provider,
     )
-    return service, log_repository
+    return service
 
 
 @pytest.mark.asyncio
 async def test_rag_service_returns_reranked_chunks_and_metadata() -> None:
     rerank_provider = FakeRerankProvider()
-    service, log_repository = _service(rerank_provider)
+    service = _service(rerank_provider)
 
     response = await service.retrieve(
         RagRetrieveRequest(
@@ -124,12 +135,11 @@ async def test_rag_service_returns_reranked_chunks_and_metadata() -> None:
     assert response.metadata["rerank"]["candidate_count"] == 2
     assert response.metadata["rerank"]["returned_count"] == 1
     assert response.metadata["rerank"]["degraded"] is False
-    assert log_repository.create.await_args.kwargs["retrieved_chunks"][0]["rerank_score"] == 0.95
 
 
 @pytest.mark.asyncio
 async def test_rag_service_degrades_to_vector_order_when_rerank_fails() -> None:
-    service, _ = _service(FakeRerankProvider(fail=True))
+    service = _service(FakeRerankProvider(fail=True))
 
     response = await service.retrieve(
         RagRetrieveRequest(
@@ -151,7 +161,7 @@ async def test_rag_service_degrades_to_vector_order_when_rerank_fails() -> None:
 @pytest.mark.asyncio
 async def test_request_can_disable_globally_enabled_rerank() -> None:
     rerank_provider = FakeRerankProvider()
-    service, _ = _service(rerank_provider, enabled=True)
+    service = _service(rerank_provider, enabled=True)
 
     response = await service.retrieve(
         RagRetrieveRequest(
@@ -172,7 +182,7 @@ async def test_request_can_disable_globally_enabled_rerank() -> None:
 @pytest.mark.asyncio
 async def test_rag_service_custom_uses_explicit_candidate_count() -> None:
     rerank_provider = FakeRerankProvider()
-    service, _ = _service(rerank_provider, max_candidates=1)
+    service = _service(rerank_provider, max_candidates=1)
 
     response = await service.retrieve(
         RagRetrieveRequest(
@@ -191,3 +201,23 @@ async def test_rag_service_custom_uses_explicit_candidate_count() -> None:
         "chunk-2",
     ]
     assert response.metadata["rerank"]["candidate_count"] == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", [RuntimeError("HTTP 429"), TimeoutError()])
+async def test_research_retrieve_once_degrades_rerank_without_retry(failure: Exception) -> None:
+    rerank = FakeRerankProvider(error=failure)
+    rag = _service(rerank)
+    rag.keyword_search_provider = EmptyKeywordSearchProvider()
+    result = await RetrieveOnceService(rag).execute(
+        tenant_id="tenant-test", user_id="user-test", kb_ids=["kb-test"],
+        index_versions={"kb-test": "v1"}, query_id="Q1", search_query="question",
+        aspect_ids=["A1"], round=1, plan=PlanResolver().resolve("pro"),
+    )
+    assert result.error is None
+    assert result.degraded is True
+    assert result.metadata["rerank"]["degraded"] is True
+    assert [chunk.chunk_id for chunk in result.retrieved_chunks][:2] == [
+        "chunk-1", "chunk-2"
+    ]
+    assert len(rerank.calls) == 1

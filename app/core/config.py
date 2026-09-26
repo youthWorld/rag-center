@@ -31,6 +31,7 @@ class Settings(BaseSettings):
     llm_base_url: str = "https://api.deepseek.com/v1"
     llm_api_key: str = ""
     llm_model: str = "deepseek-chat"
+    llm_strong_model: str = "qwen3.8-flash"
     llm_timeout_seconds: int = 60
     query_rewrite_enabled: bool = False
     query_rewrite_timeout_ms: int = 2000

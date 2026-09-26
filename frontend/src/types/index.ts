@@ -77,13 +77,14 @@ export type AuthMeData = {
     hybrid_allowed: boolean;
     rerank_allowed: boolean;
     query_rewrite_allowed: boolean;
-    evidence_allowed?: boolean;
+    evidence_allowed: boolean;
+    research_allowed: boolean;
   };
   limits: {
     retrieve_qps: number;
     retrieve_daily: number;
     max_kb: number;
-    max_kb_per_retrieve?: number;
+    max_kb_per_retrieve: number;
     max_documents_per_kb: number;
     max_processing_documents: number;
   };
@@ -161,6 +162,8 @@ export type EvidenceItem = {
   content: string;
   source: string;
   retrieved_rank?: number | null;
+  rounds?: number[];
+  query_ids?: string[];
 };
 
 export type EvidencePack = {
@@ -301,7 +304,7 @@ export type RagRetrieveResponse = {
 
 export type FeedbackRequest = {
   trace_id: string;
-  log_id?: string;
+  log_id: string;
   score: number;
   comment?: string;
 };
@@ -309,6 +312,91 @@ export type FeedbackRequest = {
 export type FeedbackData = {
   feedback_id: string;
   trace_id: string;
-  log_id?: string | null;
+  log_id: string;
   score: number;
+};
+
+export type ResearchAspect = {
+  aspect_id: string;
+  description: string;
+};
+
+export type PlannedQuery = {
+  query_id: string;
+  query: string;
+  aspect_ids: string[];
+};
+
+export type ResearchPlanData = {
+  aspects: ResearchAspect[];
+  initial_queries: PlannedQuery[];
+  degraded: boolean;
+  error?: string | null;
+};
+
+export type ResearchTaskResult = {
+  query_id: string;
+  query: string;
+  aspect_ids: string[];
+  round: number;
+  success: boolean;
+  latency_ms: number;
+  chunk_count: number;
+  new_chunk_count: number;
+  degraded: boolean;
+  error?: string | null;
+};
+
+export type ResearchRound = {
+  round: number;
+  purpose: "initial" | "supplement";
+  tasks: ResearchTaskResult[];
+  candidate_count: number;
+  new_chunk_count: number;
+  latency_ms: number;
+};
+
+export type ResearchStageUsage = {
+  stage: "planner" | "decider" | "finalizer";
+  role: "fast" | "strong";
+  model: string;
+  latency_ms: number;
+  input_tokens: number;
+  output_tokens: number;
+  degraded: boolean;
+  error?: string | null;
+};
+
+export type ResearchMetadata = {
+  research_id: string;
+  log_id: string;
+  trace_id?: string | null;
+  profile: "research_fixed";
+  tenant_plan: TenantPlan;
+  index_versions: Record<string, string>;
+  round_count: number;
+  retrieval_task_count: number;
+  llm_call_count: number;
+  input_tokens: number;
+  output_tokens: number;
+  latency_ms: number;
+    stop_reason: "evidence_complete" | "no_new_evidence" | "max_rounds" | "duplicate_query" | "timeout" | "budget_exhausted" | "degraded";
+    first_round_missing_aspect_ids: string[];
+  degraded: boolean;
+  errors: string[];
+  stages: ResearchStageUsage[];
+  planner: Record<string, unknown>;
+  decider: Record<string, unknown>;
+  finalizer: Record<string, unknown>;
+};
+
+export type ResearchData = {
+  query: string;
+  kb_id: string;
+  kb_ids: string[];
+  answer: string | null;
+  evidence_pack: EvidencePack;
+  plan: ResearchPlanData;
+  rounds: ResearchRound[];
+  metadata: ResearchMetadata;
 };

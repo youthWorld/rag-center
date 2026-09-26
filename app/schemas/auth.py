@@ -7,12 +7,14 @@ class AuthMeFeatures(BaseModel):
     rerank_allowed: bool
     query_rewrite_allowed: bool
     evidence_allowed: bool
+    research_allowed: bool
 
 
 class AuthMeLimits(BaseModel):
     retrieve_qps: int
     retrieve_daily: int
     max_kb: int
+    max_kb_per_retrieve: int
     max_documents_per_kb: int
     max_processing_documents: int
 

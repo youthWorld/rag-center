@@ -145,14 +145,12 @@ def _service(
     embedding = FakeEmbeddingProvider()
     vector_store = FakeVectorStore()
     knowledge_base_repository = FakeKnowledgeBaseRepository(available_ids)
-    log_repository = SimpleNamespace(create=AsyncMock(return_value=SimpleNamespace(id="log-test")))
     rate_limit_service = FakeRateLimitService()
     query_pipeline = CountingQueryPipeline()
     service = RagService(
         session=SimpleNamespace(commit=AsyncMock()),
         settings=Settings(top_k=5, retrieval_mode="vector"),
         knowledge_base_repository=knowledge_base_repository,
-        retrieval_log_repository=log_repository,
         embedding_provider=embedding,
         vector_store=vector_store,
         query_pipeline=query_pipeline,
@@ -164,7 +162,6 @@ def _service(
         embedding,
         vector_store,
         knowledge_base_repository,
-        log_repository,
         rate_limit_service,
         query_pipeline,
     )
@@ -172,7 +169,7 @@ def _service(
 
 @pytest.mark.asyncio
 async def test_multi_kb_quality_rerank_preserves_sources_and_falls_back() -> None:
-    service, _, _, _, _, _, _ = _service()
+    service, _, _, _, _, _ = _service()
     service.keyword_search_provider = SimpleNamespace(keyword_search=AsyncMock(return_value=[]))
 
     class CapturingReranker:
@@ -217,7 +214,6 @@ async def test_multi_kb_retrieve_processes_query_once_and_fuses_parallel_candida
         embedding,
         vector_store,
         knowledge_base_repository,
-        log_repository,
         rate_limit_service,
         query_pipeline,
     ) = _service()
@@ -272,15 +268,13 @@ async def test_multi_kb_retrieve_processes_query_once_and_fuses_parallel_candida
         "graph_selected_count": 0,
         "graph_injection_latency_ms": 0,
     }
-    assert log_repository.create.await_args.kwargs["kb_id"] == "kb-a"
-    assert log_repository.create.await_args.kwargs["kb_ids"] == ["kb-a", "kb-b"]
     assert rate_limit_service.check_calls == ["tenant-test"]
     assert rate_limit_service.record_calls == ["tenant-test"]
 
 
 @pytest.mark.asyncio
 async def test_multi_kb_retrieve_rejects_missing_or_cross_tenant_knowledge_base() -> None:
-    service, _, vector_store, _, _, _, _ = _service(available_ids={"kb-a"})
+    service, _, vector_store, _, _, _ = _service(available_ids={"kb-a"})
 
     with pytest.raises(AppError) as raised:
         await service.retrieve(
@@ -300,7 +294,7 @@ async def test_multi_kb_retrieve_rejects_missing_or_cross_tenant_knowledge_base(
 
 @pytest.mark.asyncio
 async def test_free_plan_rejects_multi_kb_before_search() -> None:
-    service, _, vector_store, _, _, _, _ = _service(plan="free")
+    service, _, vector_store, _, _, _ = _service(plan="free")
 
     with pytest.raises(AppError) as raised:
         await service.retrieve(

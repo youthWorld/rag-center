@@ -152,9 +152,6 @@ def _service(
             selected_kb_ids,
             indexed_counts=indexed_counts,
         ),
-        retrieval_log_repository=SimpleNamespace(
-            create=AsyncMock(return_value=SimpleNamespace(id="log-test"))
-        ),
         embedding_provider=FakeEmbeddingProvider(fail=embedding_fail),
         vector_store=FakeVectorStore(
             vector_results,

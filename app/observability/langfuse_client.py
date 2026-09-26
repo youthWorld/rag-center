@@ -78,6 +78,7 @@ class RetrieveObservability:
         profile: str,
         plan: str,
         raw_query: str,
+        log_id: str | None = None,
         enabled: bool = True,
     ) -> None:
         self.settings = settings
@@ -88,6 +89,7 @@ class RetrieveObservability:
         self.profile = profile
         self.plan = plan
         self.raw_query = raw_query
+        self.log_id = log_id
         self.enabled = enabled
         self.client: Langfuse | None = None
         self.trace: Any | None = None
@@ -107,6 +109,8 @@ class RetrieveObservability:
                 "profile": self.profile,
                 "plan": self.plan,
             }
+            if self.log_id:
+                metadata["log_id"] = self.log_id
             if len(self.kb_ids) > 1:
                 metadata["kb_ids"] = self.kb_ids
             self.trace = self.client.trace(
@@ -201,9 +205,10 @@ class RetrieveObservability:
             output={"degraded": degraded, "error": error},
         )
 
-    def finish(self, *, log_id: str, chunks: list[dict[str, Any]]) -> None:
+    def finish(self, *, log_id: str | None = None, chunks: list[dict[str, Any]]) -> None:
         if self.trace is None:
             return
+        resolved_log_id = log_id or self.log_id
         self._safe_trace_update(
             output={
                 "chunks": [
@@ -211,7 +216,11 @@ class RetrieveObservability:
                     for chunk in chunks
                 ]
             },
-            metadata={"log_id": log_id},
+            **(
+                {"metadata": {"log_id": resolved_log_id}}
+                if resolved_log_id
+                else {}
+            ),
         )
 
     def __exit__(self, exception_type: Any, exception: Any, traceback: Any) -> bool:

@@ -457,22 +457,20 @@ def _rag_service_with_evidence(*, llm_fail: bool = False):
         fail=llm_fail,
     )
     evidence, _ = _service(llm, [_chunk(outside, content="trusted outside body")])
-    log_repository = SimpleNamespace(create=AsyncMock(return_value=SimpleNamespace(id="log-1")))
     rag = RagService(
         session=SimpleNamespace(commit=AsyncMock()),
         settings=Settings(top_k=2, retrieval_mode="vector", evidence_enabled=False),
         knowledge_base_repository=FakeKnowledgeBaseRepository(),
-        retrieval_log_repository=log_repository,
         embedding_provider=FakeEmbeddingProvider(),
         vector_store=FakeVectorStore([top, second, outside]),
         evidence_orchestration_service=evidence,
     )
-    return rag, llm, log_repository
+    return rag, llm
 
 
 @pytest.mark.asyncio
 async def test_rag_service_preserves_retrieved_chunks_and_adds_outside_evidence() -> None:
-    service, llm, log_repository = _rag_service_with_evidence()
+    service, llm = _rag_service_with_evidence()
     base_request = dict(
         kb_id="kb-a",
         user_id="user-test",
@@ -500,14 +498,13 @@ async def test_rag_service_preserves_retrieved_chunks_and_adds_outside_evidence(
     assert len(llm.calls) == 1
     assert disabled.metadata["evidence"]["executed"] is False
     assert enabled.metadata["evidence"]["executed"] is True
-    logged = log_repository.create.await_args_list[-1].kwargs["retrieval_metadata"]["evidence"]
-    assert logged["evidence_count"] == 1
-    assert "trusted outside body" not in str(logged)
+    assert enabled.metadata["evidence"]["evidence_count"] == 1
+    assert "trusted outside body" not in str(enabled.metadata["evidence"])
 
 
 @pytest.mark.asyncio
 async def test_rag_service_returns_original_results_when_evidence_fails() -> None:
-    service, _, _ = _rag_service_with_evidence(llm_fail=True)
+    service, _ = _rag_service_with_evidence(llm_fail=True)
     response = await service.retrieve(
         RagRetrieveRequest(
             kb_id="kb-a",

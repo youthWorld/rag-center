@@ -3,6 +3,7 @@ import type {
   FeedbackData,
   FeedbackRequest,
   RagRetrieveResponse,
+  ResearchData,
   EvidenceOptions,
   QueryOptions,
   RetrieveProfile,
@@ -24,6 +25,13 @@ export type RetrievePayload = {
   index_version?: string;
 };
 
+export type ResearchPayload = {
+  kb_id?: string;
+  kb_ids?: string[];
+  user_id: string;
+  query: string;
+};
+
 async function retrieve(payload: RetrievePayload) {
   const response = await api.post<ApiEnvelope<RagRetrieveResponse>>(
     "/api/v1/rag/retrieve",
@@ -40,4 +48,12 @@ async function submitFeedback(payload: FeedbackRequest) {
   return response.data.data;
 }
 
-export const ragService = { retrieve, submitFeedback };
+async function research(payload: ResearchPayload) {
+  const response = await api.post<ApiEnvelope<ResearchData>>(
+    "/api/v1/rag/research",
+    payload,
+  );
+  return response.data.data;
+}
+
+export const ragService = { retrieve, research, submitFeedback };

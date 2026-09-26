@@ -68,15 +68,6 @@ class FakeLangfuseClient:
         self.flush_count += 1
 
 
-class FakeRetrievalLogRepository:
-    def __init__(self) -> None:
-        self.create_calls: list[dict] = []
-
-    async def create(self, **kwargs):
-        self.create_calls.append(kwargs)
-        return SimpleNamespace(id="log-test")
-
-
 @pytest.mark.asyncio
 async def test_retrieve_records_trace_spans_and_links_log_id(monkeypatch) -> None:
     client = FakeLangfuseClient()
@@ -84,7 +75,6 @@ async def test_retrieve_records_trace_spans_and_links_log_id(monkeypatch) -> Non
         "app.observability.langfuse_client.get_langfuse_client",
         lambda _settings: client,
     )
-    log_repository = FakeRetrievalLogRepository()
     service = RagService(
         session=SimpleNamespace(commit=AsyncMock()),
         settings=Settings(
@@ -97,7 +87,6 @@ async def test_retrieve_records_trace_spans_and_links_log_id(monkeypatch) -> Non
         knowledge_base_repository=SimpleNamespace(
             get_by_id=AsyncMock(return_value=SimpleNamespace(id="kb-test"))
         ),
-        retrieval_log_repository=log_repository,
         embedding_provider=FakeEmbeddingProvider(),
         vector_store=FakeVectorStore(),
     )
@@ -107,7 +96,7 @@ async def test_retrieve_records_trace_spans_and_links_log_id(monkeypatch) -> Non
         tenant_id="tenant-test",
     )
 
-    assert response.metadata["log_id"] == "log-test"
+    assert response.metadata["log_id"]
     assert response.metadata["trace_id"] == "trace-test"
     assert client.trace_calls[0]["name"] == "rag_retrieve"
     assert client.trace_calls[0]["metadata"] == {
@@ -116,14 +105,11 @@ async def test_retrieve_records_trace_spans_and_links_log_id(monkeypatch) -> Non
         "user_id": "user-test",
         "profile": "custom",
         "plan": "pro",
+        "log_id": response.metadata["log_id"],
     }
     assert client.trace_instance.spans == ["query_processing", "retrieval", "rerank"]
-    assert log_repository.create_calls[0]["trace_id"] == "trace-test"
-    assert log_repository.create_calls[0]["profile"] == "custom"
-    assert log_repository.create_calls[0]["search_query"] == "question"
-    assert log_repository.create_calls[0]["effective_query"] == "question"
     assert client.flush_count == 1
 
     final_update = client.trace_instance.updates[-1]
-    assert final_update["metadata"] == {"log_id": "log-test"}
+    assert final_update["metadata"] == {"log_id": response.metadata["log_id"]}
     assert final_update["output"] == {"chunks": [{"chunk_id": "chunk-1", "score": 0.9}]}

@@ -5,7 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings, settings
 from app.core.exceptions import ServiceConfigurationError
-from app.db.session import get_db
+from app.db.session import get_db, session_factory
 from app.providers.embedding.openai_compatible import OpenAICompatibleEmbeddingProvider
 from app.providers.keyword_search.base import KeywordSearchProvider
 from app.providers.keyword_search.elasticsearch import ElasticsearchKeywordSearchProvider
@@ -15,10 +15,10 @@ from app.providers.query.pipeline import QueryPipeline
 from app.providers.rerank.base import RerankProvider
 from app.providers.rerank.qwen37 import Qwen37RerankProvider
 from app.providers.vectorstores.pgvector import PgVectorStore
+from app.repositories.chunk_repository import ChunkRepository
 from app.repositories.document_repository import DocumentRepository
 from app.repositories.index_version_repository import IndexVersionRepository
 from app.repositories.knowledge_base_repository import KnowledgeBaseRepository
-from app.repositories.retrieval_log_repository import RetrievalLogRepository
 from app.repositories.tenant_repository import TenantRepository
 from app.services.document_service import DocumentService
 from app.services.evidence_orchestration_service import EvidenceOrchestrationService
@@ -29,6 +29,8 @@ from app.services.knowledge_base_service import KnowledgeBaseService
 from app.services.quota_service import QuotaService
 from app.services.rag_service import RagService
 from app.services.rate_limit_service import RateLimitService
+from app.services.research_service import ResearchService
+from app.services.retrieve_once_service import RetrieveOnceService
 from app.tenant.plan_resolver import PlanResolver
 
 
@@ -152,7 +154,6 @@ def get_rag_service(
         session=session,
         settings=app_settings,
         knowledge_base_repository=KnowledgeBaseRepository(session),
-        retrieval_log_repository=RetrievalLogRepository(session),
         embedding_provider=OpenAICompatibleEmbeddingProvider(app_settings),
         vector_store=PgVectorStore(session),
         keyword_search_provider_factory=lambda: get_keyword_search_provider(app_settings),
@@ -174,11 +175,46 @@ def get_rag_service(
     )
 
 
-def get_feedback_service(
+def _build_internal_rag_service(
+    session: AsyncSession, app_settings: Settings
+) -> RagService:
+    return RagService(
+        session=session,
+        settings=app_settings,
+        knowledge_base_repository=KnowledgeBaseRepository(session),
+        embedding_provider=OpenAICompatibleEmbeddingProvider(app_settings),
+        vector_store=PgVectorStore(session),
+        keyword_search_provider_factory=lambda: get_keyword_search_provider(app_settings),
+        rerank_provider=get_rerank_provider(app_settings),
+        query_pipeline=QueryPipeline(rewrite_enabled=False),
+        evidence_orchestration_service=None,
+        plan_resolver=None,
+        rate_limit_service=None,
+    )
+
+
+def get_research_service(
     session: AsyncSession = Depends(get_db),
     app_settings: Settings = Depends(get_settings),
-) -> FeedbackService:
-    return FeedbackService(
+    plan_resolver: PlanResolver = Depends(get_plan_resolver),
+    rate_limit_service: RateLimitService = Depends(get_rate_limit_service),
+) -> ResearchService:
+    async def retrieve_executor(**kwargs):
+        async with session_factory() as task_session:
+            rag_service = _build_internal_rag_service(task_session, app_settings)
+            return await RetrieveOnceService(rag_service).execute(**kwargs)
+
+    return ResearchService(
         settings=app_settings,
-        retrieval_log_repository=RetrievalLogRepository(session),
+        knowledge_base_repository=KnowledgeBaseRepository(session),
+        chunk_repository=ChunkRepository(session),
+        plan_resolver=plan_resolver,
+        rate_limit_service=rate_limit_service,
+        retrieve_executor=retrieve_executor,
     )
+
+
+def get_feedback_service(
+    app_settings: Settings = Depends(get_settings),
+) -> FeedbackService:
+    return FeedbackService(settings=app_settings)

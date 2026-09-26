@@ -20,8 +20,9 @@ from app.providers.llm.base import (
 
 
 class OpenAICompatibleLLMProvider(LLMProvider):
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, *, model_override: str | None = None) -> None:
         self.settings = settings
+        self.model = model_override or settings.llm_model
         self._client: AsyncOpenAI | None = None
         self.logger = get_logger(__name__)
 
@@ -85,6 +86,7 @@ class OpenAICompatibleLLMProvider(LLMProvider):
         user_payload: dict[str, Any],
         temperature: float = 0.0,
         timeout_seconds: float | None = None,
+        log_payload: bool = True,
         max_tokens: int | None = None,
         enable_thinking: bool | None = None,
     ) -> dict[str, Any]:
@@ -93,6 +95,7 @@ class OpenAICompatibleLLMProvider(LLMProvider):
             user_payload=user_payload,
             temperature=temperature,
             timeout_seconds=timeout_seconds,
+            log_payload=log_payload,
             max_tokens=max_tokens,
             enable_thinking=enable_thinking,
         )
@@ -105,11 +108,12 @@ class OpenAICompatibleLLMProvider(LLMProvider):
         user_payload: dict[str, Any],
         temperature: float = 0.0,
         timeout_seconds: float | None = None,
+        log_payload: bool = True,
         max_tokens: int | None = None,
         enable_thinking: bool | None = None,
     ) -> LLMJSONResponse:
         request_kwargs: dict[str, Any] = {
-            "model": self.settings.llm_model,
+            "model": self.model,
             "messages": [
                 {"role": "system", "content": system_prompt},
                 {
@@ -132,6 +136,7 @@ class OpenAICompatibleLLMProvider(LLMProvider):
             request_kwargs=request_kwargs,
             user_payload=user_payload,
             operation="chat_json",
+            log_payload=log_payload,
         )
         content = self._extract_content(response)
         try:
@@ -145,7 +150,7 @@ class OpenAICompatibleLLMProvider(LLMProvider):
             output=payload,
             metadata=LLMCallMetadata(
                 provider=self.settings.llm_provider,
-                request_model=self.settings.llm_model,
+                request_model=self.model,
                 response_model=self._read_string(response, "model"),
                 latency_ms=latency_ms,
                 request_id=(
@@ -163,7 +168,7 @@ class OpenAICompatibleLLMProvider(LLMProvider):
         )
 
     def _supports_enable_thinking(self) -> bool:
-        model = self.settings.llm_model.lower()
+        model = self.model.lower()
         base_url = self.settings.llm_base_url.lower()
         return "dashscope.aliyuncs.com" in base_url and model.startswith(
             ("qwen3", "qwen-plus", "qwen-flash")
@@ -232,14 +237,23 @@ class OpenAICompatibleLLMProvider(LLMProvider):
         request_kwargs: dict[str, Any],
         user_payload: dict[str, Any],
         operation: str,
+        log_payload: bool = True,
     ) -> Any:
         try:
             response = await log_llm_call(
                 lambda: self._get_client().chat.completions.create(**request_kwargs),
-                model=self.settings.llm_model,
-                prompt=user_payload,
+                model=self.model,
+                prompt=(
+                    user_payload
+                    if log_payload
+                    else {
+                        "payload_logging": "disabled",
+                        "input_chars": len(json.dumps(user_payload, ensure_ascii=False)),
+                    }
+                ),
                 logger=self.logger,
                 response_formatter=lambda value: {"choices": len(getattr(value, "choices", []))},
+                safe_error=not log_payload,
             )
         except (ServiceConfigurationError, LLMProviderError):
             raise
@@ -248,7 +262,7 @@ class OpenAICompatibleLLMProvider(LLMProvider):
         except Exception as exception:
             raise map_llm_exception(
                 exception,
-                model=self.settings.llm_model,
+                model=self.model,
                 operation=operation,
             ) from exception
         return response

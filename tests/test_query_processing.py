@@ -347,7 +347,6 @@ async def test_rag_service_uses_processed_query_for_retrieval_but_raw_query_for_
     embedding = FakeEmbeddingProvider()
     vector_store = FakeVectorStore()
     rerank = FakeRerankProvider()
-    log_repository = SimpleNamespace(create=AsyncMock())
     pipeline = QueryPipeline(
         rewrite_enabled=False,
         rewrite_processor=LLMRewriteProcessor(llm),
@@ -364,7 +363,6 @@ async def test_rag_service_uses_processed_query_for_retrieval_but_raw_query_for_
         knowledge_base_repository=SimpleNamespace(
             get_by_id=AsyncMock(return_value=knowledge_base)
         ),
-        retrieval_log_repository=log_repository,
         embedding_provider=embedding,
         vector_store=vector_store,
         rerank_provider=rerank,
@@ -413,7 +411,6 @@ async def test_rag_service_keeps_query_processing_null_for_legacy_request() -> N
         knowledge_base_repository=SimpleNamespace(
             get_by_id=AsyncMock(return_value=SimpleNamespace(id="kb-test"))
         ),
-        retrieval_log_repository=SimpleNamespace(create=AsyncMock()),
         embedding_provider=FakeEmbeddingProvider(),
         vector_store=FakeVectorStore(),
     )

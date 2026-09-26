@@ -38,6 +38,7 @@ class LLMProvider(ABC):
         user_payload: dict[str, Any],
         temperature: float = 0.0,
         timeout_seconds: float | None = None,
+        log_payload: bool = True,
         max_tokens: int | None = None,
         enable_thinking: bool | None = None,
     ) -> dict[str, Any]:
@@ -50,6 +51,7 @@ class LLMProvider(ABC):
         user_payload: dict[str, Any],
         temperature: float = 0.0,
         timeout_seconds: float | None = None,
+        log_payload: bool = True,
         max_tokens: int | None = None,
         enable_thinking: bool | None = None,
     ) -> LLMJSONResponse:
@@ -60,6 +62,7 @@ class LLMProvider(ABC):
             "user_payload": user_payload,
             "temperature": temperature,
             "timeout_seconds": timeout_seconds,
+            "log_payload": log_payload,
             "max_tokens": max_tokens,
         }
         if enable_thinking is not None:

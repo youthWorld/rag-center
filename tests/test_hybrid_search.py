@@ -146,7 +146,6 @@ def _rag_service(
         knowledge_base_repository=SimpleNamespace(
             get_by_id=AsyncMock(return_value=SimpleNamespace(id="kb-test"))
         ),
-        retrieval_log_repository=SimpleNamespace(create=AsyncMock()),
         embedding_provider=embedding_provider or FakeEmbeddingProvider(),
         vector_store=FakeVectorStore(),
         keyword_search_provider=keyword_search_provider,
@@ -278,7 +277,6 @@ async def test_rag_service_runs_vector_and_bm25_in_hybrid_mode() -> None:
         knowledge_base_repository=SimpleNamespace(
             get_by_id=AsyncMock(return_value=SimpleNamespace(id="kb-test"))
         ),
-        retrieval_log_repository=SimpleNamespace(create=AsyncMock()),
         embedding_provider=embedding_provider,
         vector_store=vector_store,
         keyword_search_provider=keyword_provider,

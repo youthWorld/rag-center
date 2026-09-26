@@ -67,7 +67,7 @@ async def test_feedback_score_range_returns_20022(score: int) -> None:
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.post(
             "/api/v1/rag/feedback",
-            json={"trace_id": "trace-test", "score": score},
+            json={"trace_id": "trace-test", "log_id": "log-test", "score": score},
         )
 
     assert response.status_code == 400
@@ -80,7 +80,7 @@ async def test_feedback_rejects_blank_trace_id() -> None:
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.post(
             "/api/v1/rag/feedback",
-            json={"trace_id": "   ", "score": 4},
+            json={"trace_id": "   ", "log_id": "log-test", "score": 4},
         )
 
     assert response.status_code == 400
