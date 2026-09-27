@@ -114,7 +114,8 @@ def generate_report(run_dir: Path) -> str:
         f"{_format_number(comparison['baseline']['average_application_model_calls'])} → "
         f"{_format_number(comparison['candidate']['average_application_model_calls'])}，"
         f"变化 {_format_signed(comparison['delta']['average_application_model_calls'])} 次。",
-        "- 应用模型调用数不包含查询 Embedding、索引构建、预热和 RAGAS Judge。",
+        "- 应用模型调用数包含查询 Embedding、Rewrite、精排和 Evidence；"
+        "不包含索引构建、预热和 RAGAS Judge。",
         "",
         "## 启用或回退建议",
         "",

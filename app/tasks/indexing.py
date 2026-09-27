@@ -79,6 +79,9 @@ async def _index_document(
                 "chunk_count": result,
             }
         finally:
+            embedding_close = getattr(getattr(service, "embedding_provider", None), "close", None)
+            if embedding_close is not None:
+                await embedding_close()
             close = getattr(service.keyword_search_provider, "close", None)
             if close is not None:
                 await close()
@@ -175,6 +178,9 @@ async def _rebuild_index_version(*, tenant_id: str, kb_id: str, version: str) ->
                 await session.commit()
             raise
         finally:
+            embedding_close = getattr(getattr(service, "embedding_provider", None), "close", None)
+            if embedding_close is not None:
+                await embedding_close()
             close = getattr(service.keyword_search_provider, "close", None)
             if close is not None:
                 await close()

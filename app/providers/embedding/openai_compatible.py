@@ -1,3 +1,4 @@
+import httpx
 from openai import AsyncOpenAI
 
 from app.core.config import Settings
@@ -7,14 +8,19 @@ from app.core.exceptions import (
     ServiceConfigurationError,
     map_llm_exception,
 )
+from app.core.http_clients import BorrowedAsyncOpenAI
 from app.core.logging import get_logger, log_llm_call
 from app.providers.embedding.base import EmbeddingProvider
+from app.services.retrieval_usage import record_request
 
 
 class OpenAICompatibleEmbeddingProvider(EmbeddingProvider):
-    def __init__(self, settings: Settings) -> None:
+    records_request_attempts = True
+
+    def __init__(self, settings: Settings, *, http_client: httpx.AsyncClient | None = None) -> None:
         self.settings = settings
         self._client: AsyncOpenAI | None = None
+        self.http_client = http_client
         self.logger = get_logger(__name__)
 
     def _get_client(self) -> AsyncOpenAI:
@@ -24,9 +30,11 @@ class OpenAICompatibleEmbeddingProvider(EmbeddingProvider):
                 context={"provider": type(self).__name__},
             )
         if self._client is None:
-            self._client = AsyncOpenAI(
+            client_type = BorrowedAsyncOpenAI if self.http_client is not None else AsyncOpenAI
+            self._client = client_type(
                 api_key=self.settings.model_api_key,
                 base_url=self.settings.model_base_url,
+                http_client=self.http_client,
             )
         return self._client
 
@@ -47,13 +55,19 @@ class OpenAICompatibleEmbeddingProvider(EmbeddingProvider):
         return {"items": len(items), "dimensions": dimensions}
 
     async def _create_embeddings(self, input_value, *, operation: str):
+        async def operation_call():
+            client = self._get_client()
+            if operation == "embed_query":
+                record_request("embedding")
+            return await client.embeddings.create(
+                model=self.settings.embedding_model,
+                input=input_value,
+                dimensions=self.settings.embedding_dimensions,
+            )
+
         try:
             return await log_llm_call(
-                lambda: self._get_client().embeddings.create(
-                    model=self.settings.embedding_model,
-                    input=input_value,
-                    dimensions=self.settings.embedding_dimensions,
-                ),
+                operation_call,
                 model=self.settings.embedding_model,
                 prompt=input_value,
                 logger=self.logger,
@@ -105,3 +119,7 @@ class OpenAICompatibleEmbeddingProvider(EmbeddingProvider):
                 f"expected {expected_count}, got {len(items)}"
             )
         return [self._validate_dimensions(list(item.embedding)) for item in items]
+
+    async def close(self) -> None:
+        if self.http_client is None and self._client is not None:
+            await self._client.close()

@@ -96,6 +96,8 @@ class FakeVectorStore(VectorStore):
     async def delete_by_document_id(self, document_id: str) -> None:
         del document_id
 
+    from tests.scope_fakes import vector_scope as similarity_search_scope
+
 
 class FakeKeywordSearchProvider(KeywordSearchProvider):
     def __init__(self, *, fail: bool = False) -> None:
@@ -123,6 +125,8 @@ class FakeKeywordSearchProvider(KeywordSearchProvider):
 
     async def delete_by_document_id(self, document_id: str) -> None:
         del document_id
+
+    from tests.scope_fakes import keyword_scope as keyword_search_scope
 
 
 def _rag_service(
@@ -153,7 +157,7 @@ def _rag_service(
 
 
 @pytest.mark.asyncio
-async def test_quality_reranks_rrf_top20_before_returning_top10() -> None:
+async def test_quality_reranks_rrf_top20_before_returning_top5() -> None:
     service = _rag_service(keyword_search_provider=FakeKeywordSearchProvider())
     service.vector_store.chunks = [_chunk(f"chunk-{i}", score=1 / (i + 1)) for i in range(25)]
 
@@ -173,11 +177,11 @@ async def test_quality_reranks_rrf_top20_before_returning_top10() -> None:
     )
     assert service.vector_store.calls[0]["top_k"] == 20
     assert len(reranker.calls[0][1]) == 20
-    assert reranker.calls[0][2] == 10
-    assert len(response.retrieved_chunks) == 10
+    assert reranker.calls[0][2] == 5
+    assert len(response.retrieved_chunks) == 5
     assert response.metadata["rerank"]["candidate_count"] == 20
-    assert response.metadata["rerank"]["returned_count"] == 10
-    assert response.metadata["rerank"]["top_n"] == 10
+    assert response.metadata["rerank"]["returned_count"] == 5
+    assert response.metadata["rerank"]["top_n"] == 5
     assert all(chunk.rerank_score == 0.5 for chunk in response.retrieved_chunks)
 
     async def failed(**kwargs):
@@ -188,9 +192,9 @@ async def test_quality_reranks_rrf_top20_before_returning_top10() -> None:
         RagRetrieveRequest(kb_id="kb-test", user_id="user-test", query="refund", profile="quality"),
         tenant_id="tenant-test",
     )
-    assert len(fallback.retrieved_chunks) == 10
+    assert len(fallback.retrieved_chunks) == 5
     assert [chunk.chunk_id for chunk in fallback.retrieved_chunks] == [
-        chunk["chunk_id"] for chunk in reranker.calls[0][1][:10]
+        chunk["chunk_id"] for chunk in reranker.calls[0][1][:5]
     ]
     assert all(chunk.rerank_score is None for chunk in fallback.retrieved_chunks)
     assert fallback.metadata["rerank"]["degraded"] is True
@@ -228,8 +232,6 @@ async def test_http_quality_and_custom_explicit_disable_use_same_contract() -> N
                     "user_id": "integration-quality",
                     "query": "refund",
                     "profile": "quality",
-                    "top_k": 1,
-                    "rerank_options": {"enabled": False},
                 },
             )
             custom = await client.post(
@@ -250,9 +252,9 @@ async def test_http_quality_and_custom_explicit_disable_use_same_contract() -> N
         app.dependency_overrides.pop(get_current_tenant, None)
     assert quality.status_code == custom.status_code == 200
     qdata, cdata = quality.json()["data"], custom.json()["data"]
-    assert seen == [(20, 10)]
+    assert seen == [(20, 5)]
     assert qdata["metadata"]["rerank"]["model"] == "qwen3.7-text-rerank"
-    assert len(qdata["retrieved_chunks"]) == 10
+    assert len(qdata["retrieved_chunks"]) == 5
     assert qdata["metadata"]["rerank"]["candidate_count"] == 20
     assert len(cdata["retrieved_chunks"]) == 3
     assert cdata["metadata"]["rerank"]["enabled"] is False
@@ -284,6 +286,7 @@ async def test_rag_service_runs_vector_and_bm25_in_hybrid_mode() -> None:
 
     response = await service.retrieve(
         RagRetrieveRequest(
+            profile="custom",
             kb_id="kb-test",
             user_id="user-test",
             query="refund",
@@ -292,7 +295,6 @@ async def test_rag_service_runs_vector_and_bm25_in_hybrid_mode() -> None:
                 "mode": "hybrid",
                 "vector_top_k": 2,
                 "bm25_top_k": 2,
-                "rrf_k": 60,
             },
         ),
         tenant_id="tenant-test",
@@ -310,7 +312,22 @@ async def test_rag_service_runs_vector_and_bm25_in_hybrid_mode() -> None:
     assert response.retrieved_chunks[0].metadata == {}
     assert response.retrieved_chunks[0].vector_rank == 2
     assert response.retrieved_chunks[0].bm25_rank == 1
-    assert response.metadata["retrieval"] == {
+    assert {
+        key: response.metadata["retrieval"][key]
+        for key in (
+            "mode",
+            "fusion",
+            "rrf_k",
+            "vector_store",
+            "keyword_search",
+            "vector_top_k",
+            "bm25_top_k",
+            "vector_count",
+            "bm25_count",
+            "fused_count",
+            "graph_selected_count",
+        )
+    } == {
         "mode": "hybrid",
         "fusion": "rrf",
         "rrf_k": 60,
@@ -319,10 +336,10 @@ async def test_rag_service_runs_vector_and_bm25_in_hybrid_mode() -> None:
         "vector_top_k": 2,
         "bm25_top_k": 2,
         "vector_count": 2,
-            "bm25_count": 2,
-            "fused_count": 3,
-            "graph_selected_count": 0,
-        }
+        "bm25_count": 2,
+        "fused_count": 3,
+        "graph_selected_count": 0,
+    }
     assert isinstance(response.metadata["latency_ms"], int)
 
 
@@ -358,6 +375,7 @@ async def test_rag_service_preserves_chunk_metadata() -> None:
 
     response = await service.retrieve(
         RagRetrieveRequest(
+            profile="custom",
             kb_id="kb-test",
             user_id="user-test",
             query="refund",
@@ -382,6 +400,7 @@ async def test_hybrid_search_degrades_to_vector_results_when_bm25_fails() -> Non
 
     response = await service.retrieve(
         RagRetrieveRequest(
+            profile="custom",
             kb_id="kb-test",
             user_id="user-test",
             query="refund",
@@ -408,6 +427,7 @@ async def test_bm25_mode_does_not_call_embedding() -> None:
 
     response = await service.retrieve(
         RagRetrieveRequest(
+            profile="custom",
             kb_id="kb-test",
             user_id="user-test",
             query="refund",

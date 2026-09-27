@@ -28,6 +28,8 @@ class FakeVectorStore(VectorStore):
     async def delete_by_document_id(self, document_id: str) -> None:
         self.chunks = [chunk for chunk in self.chunks if chunk["document_id"] != document_id]
 
+    from tests.scope_fakes import vector_scope as similarity_search_scope
+
 
 class FakeKeywordSearchProvider(KeywordSearchProvider):
     def __init__(self) -> None:
@@ -42,6 +44,8 @@ class FakeKeywordSearchProvider(KeywordSearchProvider):
 
     async def delete_by_document_id(self, document_id: str) -> None:
         self.chunks = [chunk for chunk in self.chunks if chunk["document_id"] != document_id]
+
+    from tests.scope_fakes import keyword_scope as keyword_search_scope
 
 
 async def test_indexing_service_creates_embedded_chunks() -> None:
@@ -110,11 +114,7 @@ async def test_indexing_service_uses_structured_splitter_for_markdown_documents(
         kb_id="kb-test",
         title="rules.md",
         content=(
-            "# 交易规则\n\n"
-            "退款说明。\n\n"
-            "| 场景 | 说明 |\n"
-            "| --- | --- |\n"
-            "| 退款 | 原路退回 |\n"
+            "# 交易规则\n\n退款说明。\n\n| 场景 | 说明 |\n| --- | --- |\n| 退款 | 原路退回 |\n"
         ),
     )
 

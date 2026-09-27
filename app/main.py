@@ -1,3 +1,4 @@
+from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import FastAPI, Request
@@ -9,6 +10,7 @@ from app.api.v1.router import router as v1_router
 from app.core.config import settings
 from app.core.error_codes import ErrorCode
 from app.core.exceptions import AppError
+from app.core.http_clients import build_external_clients
 from app.core.logging import (
     configure_logging,
     get_logger,
@@ -21,10 +23,21 @@ logger = get_logger(__name__)
 
 def create_app() -> FastAPI:
     configure_logging()
+
+    @asynccontextmanager
+    async def lifespan(application: FastAPI):
+        clients = build_external_clients(settings)
+        application.state.external_clients = clients
+        try:
+            yield
+        finally:
+            await clients.aclose()
+
     application = FastAPI(
         title="RAG Center",
         version="0.1.0",
         description="A small, extensible RAG platform backend.",
+        lifespan=lifespan,
     )
     application.state.settings = settings
     application.middleware("http")(request_logging_middleware)
@@ -153,8 +166,7 @@ def _has_feedback_score_range_error(errors: list[dict[str, Any]]) -> bool:
         "less_than_equal",
     }
     return any(
-        error.get("type") in range_error_types
-        and list(error.get("loc", []))[-1:] == ["score"]
+        error.get("type") in range_error_types and list(error.get("loc", []))[-1:] == ["score"]
         for error in errors
     )
 

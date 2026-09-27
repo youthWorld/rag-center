@@ -50,6 +50,8 @@ class FakeVectorStore(VectorStore):
     async def delete_by_document_id(self, document_id: str) -> None:
         del document_id
 
+    from tests.scope_fakes import vector_scope as similarity_search_scope
+
 
 class FakeKnowledgeBaseRepository:
     async def get_by_id(self, *, kb_id: str, tenant_id: str):
@@ -66,6 +68,8 @@ class EmptyKeywordSearchProvider(KeywordSearchProvider):
 
     async def delete_by_document_id(self, document_id: str, *, index_version=None) -> None:
         del document_id, index_version
+
+    from tests.scope_fakes import keyword_scope as keyword_search_scope
 
 
 class FakeRerankProvider(RerankProvider):
@@ -118,6 +122,7 @@ async def test_rag_service_returns_reranked_chunks_and_metadata() -> None:
 
     response = await service.retrieve(
         RagRetrieveRequest(
+            profile="custom",
             kb_id="kb-test",
             user_id="user-test",
             query="question",
@@ -143,6 +148,7 @@ async def test_rag_service_degrades_to_vector_order_when_rerank_fails() -> None:
 
     response = await service.retrieve(
         RagRetrieveRequest(
+            profile="custom",
             kb_id="kb-test",
             user_id="user-test",
             query="question",
@@ -165,6 +171,7 @@ async def test_request_can_disable_globally_enabled_rerank() -> None:
 
     response = await service.retrieve(
         RagRetrieveRequest(
+            profile="custom",
             kb_id="kb-test",
             user_id="user-test",
             query="question",
@@ -186,6 +193,7 @@ async def test_rag_service_custom_uses_explicit_candidate_count() -> None:
 
     response = await service.retrieve(
         RagRetrieveRequest(
+            profile="custom",
             kb_id="kb-test",
             user_id="user-test",
             query="question",
@@ -210,14 +218,18 @@ async def test_research_retrieve_once_degrades_rerank_without_retry(failure: Exc
     rag = _service(rerank)
     rag.keyword_search_provider = EmptyKeywordSearchProvider()
     result = await RetrieveOnceService(rag).execute(
-        tenant_id="tenant-test", user_id="user-test", kb_ids=["kb-test"],
-        index_versions={"kb-test": "v1"}, query_id="Q1", search_query="question",
-        aspect_ids=["A1"], round=1, plan=PlanResolver().resolve("pro"),
+        tenant_id="tenant-test",
+        user_id="user-test",
+        kb_ids=["kb-test"],
+        index_versions={"kb-test": "v1"},
+        query_id="Q1",
+        search_query="question",
+        aspect_ids=["A1"],
+        round=1,
+        plan=PlanResolver().resolve("pro"),
     )
     assert result.error is None
     assert result.degraded is True
     assert result.metadata["rerank"]["degraded"] is True
-    assert [chunk.chunk_id for chunk in result.retrieved_chunks][:2] == [
-        "chunk-1", "chunk-2"
-    ]
+    assert [chunk.chunk_id for chunk in result.retrieved_chunks][:2] == ["chunk-1", "chunk-2"]
     assert len(rerank.calls) == 1

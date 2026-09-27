@@ -6,14 +6,19 @@ from app.schemas.hybrid_search import HybridSearchChunk
 class HybridSearchService:
     """Normalize and fuse vector/BM25 results with reciprocal rank fusion."""
 
-    def __init__(self, *, rrf_k: int = 60) -> None:
+    def __init__(self, *, rrf_k: int) -> None:
         if rrf_k < 1:
             raise ValueError("rrf_k must be at least 1")
         self.rrf_k = rrf_k
 
     def normalize_vector_results(self, chunks: list[dict[str, Any]]) -> list[dict[str, Any]]:
         normalized: list[dict[str, Any]] = []
+        seen = set()
         for rank, chunk in enumerate(chunks, start=1):
+            identity = (chunk.get("kb_id"), chunk.get("chunk_id"))
+            if identity in seen:
+                continue
+            seen.add(identity)
             score = self._score(chunk.get("vector_score", chunk.get("score")))
             normalized.append(
                 {
@@ -30,7 +35,12 @@ class HybridSearchService:
 
     def normalize_bm25_results(self, chunks: list[dict[str, Any]]) -> list[dict[str, Any]]:
         normalized: list[dict[str, Any]] = []
+        seen = set()
         for rank, chunk in enumerate(chunks, start=1):
+            identity = (chunk.get("kb_id"), chunk.get("chunk_id"))
+            if identity in seen:
+                continue
+            seen.add(identity)
             score = self._score(chunk.get("bm25_score", chunk.get("score")))
             normalized.append(
                 {
@@ -107,6 +117,9 @@ class HybridSearchService:
             ):
                 if item.get(optional_field) is None:
                     item.pop(optional_field, None)
+            if chunk.get("kb_id") is not None:
+                item["kb_id"] = chunk["kb_id"]
+                item["kb_name"] = chunk.get("kb_name")
             fused.append(item)
 
         fused.sort(key=self._sort_key)
@@ -125,8 +138,10 @@ class HybridSearchService:
                 continue
             chunk_id = str(chunk_id)
             record = merged.setdefault(
-                chunk_id,
+                (str(chunk.get("kb_id") or ""), chunk_id),
                 {
+                    "kb_id": chunk.get("kb_id"),
+                    "kb_name": chunk.get("kb_name"),
                     "document_id": str(chunk.get("document_id", "")),
                     "chunk_id": chunk_id,
                     "title": str(chunk.get("title", "")),
@@ -164,10 +179,11 @@ class HybridSearchService:
         return float(value) if value is not None else 0.0
 
     @staticmethod
-    def _sort_key(chunk: dict[str, Any]) -> tuple[float, int, int, str]:
+    def _sort_key(chunk: dict[str, Any]) -> tuple:
         return (
             -float(chunk["score"]),
-            chunk.get("vector_rank") or 10**9,
-            chunk.get("bm25_rank") or 10**9,
+            -int(chunk.get("vector_rank") is not None and chunk.get("bm25_rank") is not None),
+            min(chunk.get("vector_rank") or 10**9, chunk.get("bm25_rank") or 10**9),
+            str(chunk.get("kb_id") or ""),
             chunk["chunk_id"],
         )

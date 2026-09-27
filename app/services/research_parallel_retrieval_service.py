@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from app.schemas.research import PlannedQuery, ResearchRound, ResearchState, ResearchTaskResult
 from app.services.research_common import safe_stage_error
 from app.services.research_limits import MAX_INITIAL_QUERIES, MAX_SUPPLEMENT_QUERIES
+from app.services.retrieval_usage import retrieval_usage
 from app.services.retrieve_once_service import RetrieveOnceResult
 from app.tenant.plan_resolver import PlanContext
 
@@ -46,6 +47,8 @@ class ResearchParallelRetrievalService:
         async def run(query: PlannedQuery) -> RetrieveOnceResult:
             state.mark_visited(query.query)
             task_started = time.perf_counter()
+            counts: dict[str, int] = {}
+            token = retrieval_usage.set(counts)
             try:
                 async with semaphore:
                     return await asyncio.wait_for(
@@ -70,13 +73,24 @@ class ResearchParallelRetrievalService:
                     round=round_number,
                     candidate_snapshot=[],
                     retrieved_chunks=[],
-                    metadata={},
+                    metadata={
+                        "application_model_call_details": dict(counts),
+                        "application_model_calls": sum(counts.values()),
+                    },
                     latency_ms=int((time.perf_counter() - task_started) * 1000),
                     degraded=True,
                     error=safe_stage_error("retrieval task", exception),
                 )
 
+            finally:
+                retrieval_usage.reset(token)
+
         results = await asyncio.gather(*(run(query) for query in selected))
+        for result in results:
+            for name, count in result.metadata.get("application_model_call_details", {}).items():
+                state.retrieval_model_call_details[name] = (
+                    state.retrieval_model_call_details.get(name, 0) + count
+                )
         latency_ms = int((time.perf_counter() - started) * 1000)
         tasks = [
             ResearchTaskResult(

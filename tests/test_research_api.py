@@ -52,16 +52,29 @@ class FakeResearchService:
                         {"query_id": "Q1", "query": request.query, "aspect_ids": ["A1"]}
                     ],
                 },
-                "rounds": [{
-                    "round": 1, "purpose": "initial", "candidate_count": 1,
-                    "new_chunk_count": 1, "latency_ms": 12,
-                    "tasks": [{
-                        "query_id": "Q1", "query": request.query,
-                        "aspect_ids": ["A1"], "round": 1, "success": True,
-                        "latency_ms": 12, "chunk_count": 1, "new_chunk_count": 1,
-                    }],
-                }],
+                "rounds": [
+                    {
+                        "round": 1,
+                        "purpose": "initial",
+                        "candidate_count": 1,
+                        "new_chunk_count": 1,
+                        "latency_ms": 12,
+                        "tasks": [
+                            {
+                                "query_id": "Q1",
+                                "query": request.query,
+                                "aspect_ids": ["A1"],
+                                "round": 1,
+                                "success": True,
+                                "latency_ms": 12,
+                                "chunk_count": 1,
+                                "new_chunk_count": 1,
+                            }
+                        ],
+                    }
+                ],
                 "metadata": {
+                    "rrf_k": 60,
                     "research_id": "research-a",
                     "log_id": "log-a",
                     "profile": "research_fixed",
@@ -156,7 +169,9 @@ async def test_research_route_passes_authenticated_tenant_not_client_tenant(
         response = await client.post(
             "/api/v1/rag/research",
             json={
-                "kb_id": "kb-a", "user_id": "user-a", "query": "问题",
+                "kb_id": "kb-a",
+                "user_id": "user-a",
+                "query": "问题",
                 "tenant_id": "tenant-b",
             },
         )

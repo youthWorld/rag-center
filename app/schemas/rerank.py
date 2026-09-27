@@ -2,8 +2,9 @@ from pydantic import BaseModel, Field
 
 
 class RerankOptions(BaseModel):
+    model_config = {"extra": "forbid"}
     enabled: bool | None = None
-    top_n: int | None = Field(default=None, ge=1)
+    top_n: int | None = Field(default=None, ge=1, le=50)
 
 
 class RerankCandidate(BaseModel):

@@ -146,15 +146,17 @@ async def test_non_json_and_timeout():
 
 
 def test_product_dependency_cannot_select_offline_llm_baseline():
-    provider = get_rerank_provider(Settings(_env_file=None, rerank_provider="llm"))
+    provider = get_rerank_provider(Settings(hybrid_rrf_k=60, _env_file=None, rerank_provider="llm"))
     assert isinstance(provider, Qwen37RerankProvider)
-    payload = RagRetrieveRequest.model_validate(
-        {
-            "kb_id": "kb",
-            "user_id": "u",
-            "query": "q",
-            "profile": "custom",
-            "offline_reranker": "llm",
-        }
-    )
-    assert not hasattr(payload, "offline_reranker")
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError, match="extra_forbidden"):
+        RagRetrieveRequest.model_validate(
+            {
+                "kb_id": "kb",
+                "user_id": "u",
+                "query": "q",
+                "profile": "custom",
+                "offline_reranker": "llm",
+            }
+        )

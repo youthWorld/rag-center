@@ -439,7 +439,9 @@ class IndexingService:
             raise RuntimeError("IndexingService persistence dependencies are not configured")
 
 
-def build_indexing_service(session: AsyncSession, app_settings: Settings) -> IndexingService:
+def build_indexing_service(
+    session: AsyncSession, app_settings: Settings, *, clients=None
+) -> IndexingService:
     from app.providers.embedding.openai_compatible import OpenAICompatibleEmbeddingProvider
     from app.providers.keyword_search.elasticsearch import ElasticsearchKeywordSearchProvider
     from app.providers.vectorstores.pgvector import PgVectorStore
@@ -465,7 +467,11 @@ def build_indexing_service(session: AsyncSession, app_settings: Settings) -> Ind
             chunk_overlap=app_settings.chunk_overlap,
             table_max_rows_per_chunk=app_settings.table_max_rows_per_chunk,
         ),
-        embedding_provider=OpenAICompatibleEmbeddingProvider(app_settings),
+        embedding_provider=OpenAICompatibleEmbeddingProvider(
+            app_settings, http_client=clients.model if clients else None
+        ),
         vector_store=PgVectorStore(session),
-        keyword_search_provider=ElasticsearchKeywordSearchProvider(app_settings),
+        keyword_search_provider=ElasticsearchKeywordSearchProvider(
+            app_settings, client=clients.elasticsearch if clients else None
+        ),
     )

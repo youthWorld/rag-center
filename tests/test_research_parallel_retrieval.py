@@ -20,10 +20,14 @@ async def test_parallel_tasks_are_isolated_and_partial_failure_keeps_successes()
         nonlocal active, peak
         active += 1
         peak = max(peak, active)
-        calls.append((
-            kwargs["query_id"], kwargs["search_query"], tuple(kwargs["kb_ids"]),
-            dict(kwargs["index_versions"]),
-        ))
+        calls.append(
+            (
+                kwargs["query_id"],
+                kwargs["search_query"],
+                tuple(kwargs["kb_ids"]),
+                dict(kwargs["index_versions"]),
+            )
+        )
         if active == 3:
             started.set()
         try:
@@ -32,20 +36,34 @@ async def test_parallel_tasks_are_isolated_and_partial_failure_keeps_successes()
             if kwargs["query_id"] == "Q2":
                 raise RuntimeError("secret candidate content must not escape")
             return RetrieveOnceResult(
-                query_id=kwargs["query_id"], query=kwargs["search_query"],
-                aspect_ids=kwargs["aspect_ids"], round=kwargs["round"],
-                candidate_snapshot=[], metadata={}, latency_ms=10,
-                retrieved_chunks=[RetrievedChunk(
-                    document_id="doc", chunk_id=kwargs["query_id"], kb_id="kb-a",
-                    index_version="v1", title="title", content="content", score=0.5,
-                )],
+                query_id=kwargs["query_id"],
+                query=kwargs["search_query"],
+                aspect_ids=kwargs["aspect_ids"],
+                round=kwargs["round"],
+                candidate_snapshot=[],
+                metadata={},
+                latency_ms=10,
+                retrieved_chunks=[
+                    RetrievedChunk(
+                        document_id="doc",
+                        chunk_id=kwargs["query_id"],
+                        kb_id="kb-a",
+                        index_version="v1",
+                        title="title",
+                        content="content",
+                        score=0.5,
+                    )
+                ],
             )
         finally:
             active -= 1
 
     state = ResearchState(
-        research_id="research", original_query="question", tenant_id="tenant-a",
-        kb_ids=["kb-a", "kb-b"], index_versions={"kb-a": "v1", "kb-b": "v2"},
+        research_id="research",
+        original_query="question",
+        tenant_id="tenant-a",
+        kb_ids=["kb-a", "kb-b"],
+        index_versions={"kb-a": "v1", "kb-b": "v2"},
     )
     queries = [
         PlannedQuery(query_id=f"Q{i}", query=f"query {i}", aspect_ids=[f"A{i}"])
@@ -53,16 +71,19 @@ async def test_parallel_tasks_are_isolated_and_partial_failure_keeps_successes()
     ]
     result = await asyncio.wait_for(
         ResearchParallelRetrievalService(executor).execute(
-            state=state, queries=queries, user_id="user-a",
-            plan=PlanResolver().resolve("pro"), round_number=1, timeout_seconds=1,
+            state=state,
+            queries=queries,
+            user_id="user-a",
+            plan=PlanResolver().resolve("pro"),
+            round_number=1,
+            timeout_seconds=1,
         ),
         timeout=2,
     )
 
     assert peak == 3
     assert calls == [
-        (f"Q{i}", f"query {i}", ("kb-a", "kb-b"), {"kb-a": "v1", "kb-b": "v2"})
-        for i in range(1, 4)
+        (f"Q{i}", f"query {i}", ("kb-a", "kb-b"), {"kb-a": "v1", "kb-b": "v2"}) for i in range(1, 4)
     ]
     assert result.success_count == 2
     assert result.failed_count == 1
@@ -72,3 +93,36 @@ async def test_parallel_tasks_are_isolated_and_partial_failure_keeps_successes()
     assert [task.chunk_count for task in result.round.tasks] == [1, 0, 1]
     assert "secret candidate" not in str(result.round.model_dump())
     assert all("chunk_ids" not in task.model_dump() for task in result.round.tasks)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["exception", "timeout"])
+async def test_failed_task_counts_attempts_without_spending_role_budget(failure):
+    from app.services.retrieval_usage import record_retrieval_model_call
+
+    cleaned = asyncio.Event()
+
+    async def executor(**kwargs):
+        record_retrieval_model_call("embedding")
+        try:
+            if failure == "timeout":
+                await asyncio.Event().wait()
+            raise RuntimeError("failed")
+        finally:
+            cleaned.set()
+
+    state = ResearchState(
+        research_id="r", original_query="q", tenant_id="t", kb_ids=["a"], index_versions={"a": "v2"}
+    )
+    result = await ResearchParallelRetrievalService(executor).execute(
+        state=state,
+        queries=[PlannedQuery(query_id="q1", query="q", aspect_ids=["a1"])],
+        user_id="u",
+        plan=PlanResolver().resolve("pro"),
+        round_number=1,
+        timeout_seconds=0.01,
+    )
+    assert result.failed_count == 1
+    assert cleaned.is_set()
+    assert state.retrieval_model_call_details == {"embedding": 1}
+    assert state.llm_call_count == 0

@@ -135,6 +135,8 @@ class FakeVectorStore(VectorStore):
     async def delete_by_document_id(self, document_id: str) -> None:
         del document_id
 
+    from tests.scope_fakes import vector_scope as similarity_search_scope
+
 
 class FakeKnowledgeBaseRepository:
     async def get_by_id(self, *, kb_id: str, tenant_id: str):
@@ -385,13 +387,14 @@ def test_evidence_request_priority_and_plan_restriction() -> None:
     service.settings = Settings(evidence_enabled=True)
     assert (
         service._resolve_evidence_options(
-            RagRetrieveRequest(kb_id="kb-a", user_id="u", query="q")
+            RagRetrieveRequest(profile="custom", kb_id="kb-a", user_id="u", query="q")
         ).enabled
         is True
     )
     assert (
         service._resolve_evidence_options(
             RagRetrieveRequest(
+                profile="custom",
                 kb_id="kb-a",
                 user_id="u",
                 query="q",
@@ -521,8 +524,5 @@ async def test_rag_service_returns_original_results_when_evidence_fails() -> Non
     assert [item.chunk_id for item in response.retrieved_chunks] == ["top-1", "top-2"]
     assert response.evidence_pack is None
     assert response.metadata["evidence"]["degraded"] is True
-    assert (
-        response.metadata["evidence"]["error_code"]
-        == "EVIDENCE_ORCHESTRATION_ERROR"
-    )
+    assert response.metadata["evidence"]["error_code"] == "EVIDENCE_ORCHESTRATION_ERROR"
     assert response.metadata["application_model_call_details"]["evidence"] == 1

@@ -12,7 +12,6 @@ from app.providers.embedding.base import EmbeddingProvider
 from app.providers.query.pipeline import QueryPipeline
 from app.providers.vectorstores.base import VectorStore
 from app.schemas.rag import RagRetrieveRequest
-from app.services.multi_kb_fusion_service import MultiKBFusionService
 from app.services.rag_service import RagService
 from app.tenant.plan_resolver import PlanResolver
 
@@ -25,21 +24,6 @@ def _chunk(chunk_id: str, *, score: float) -> dict:
         "content": f"Content {chunk_id}",
         "score": score,
     }
-
-
-def test_multi_kb_fusion_sums_rrf_scores_for_duplicate_chunks() -> None:
-    service = MultiKBFusionService(rrf_k=60)
-
-    result = service.fuse(
-        {
-            "kb-a": [_chunk("shared", score=0.9), _chunk("a-only", score=0.8)],
-            "kb-b": [_chunk("b-only", score=0.9), _chunk("shared", score=0.8)],
-        }
-    )
-
-    assert [chunk["chunk_id"] for chunk in result] == ["shared", "b-only", "a-only"]
-    assert result[0]["score"] == pytest.approx(1 / 61 + 1 / 62)
-    assert result[0]["kb_id"] == "kb-a"
 
 
 class FakeEmbeddingProvider(EmbeddingProvider):
@@ -85,6 +69,20 @@ class FakeVectorStore(VectorStore):
 
     async def delete_by_document_id(self, document_id: str) -> None:
         del document_id
+
+    async def similarity_search_scope(self, query_vector, *, tenant_id, index_versions, top_k):
+        self.calls.append({"index_versions": index_versions, "top_k": top_k})
+        rows = [
+            {**_chunk(cid, score=score), "kb_id": kb, "index_version": index_versions[kb]}
+            for kb, cid, score in [
+                ("kb-a", "shared", 0.9),
+                ("kb-b", "b-only", 0.9),
+                ("kb-a", "a-only", 0.8),
+                ("kb-b", "shared", 0.8),
+            ]
+            if kb in index_versions
+        ]
+        return rows[:top_k]
 
 
 class FakeKnowledgeBaseRepository:
@@ -170,7 +168,9 @@ def _service(
 @pytest.mark.asyncio
 async def test_multi_kb_quality_rerank_preserves_sources_and_falls_back() -> None:
     service, _, _, _, _, _ = _service()
-    service.keyword_search_provider = SimpleNamespace(keyword_search=AsyncMock(return_value=[]))
+    service.keyword_search_provider = SimpleNamespace(
+        keyword_search_scope=AsyncMock(return_value=[])
+    )
 
     class CapturingReranker:
         def __init__(self):
@@ -189,10 +189,10 @@ async def test_multi_kb_quality_rerank_preserves_sources_and_falls_back() -> Non
         kb_ids=["kb-a", "kb-b"], user_id="multi-quality", query="refund", profile="quality"
     )
     result = await service.retrieve(request, tenant_id="tenant-test")
-    assert len(reranker.seen) == 3
-    assert result.metadata["rerank"]["candidate_count"] == 3
-    assert result.metadata["rerank"]["returned_count"] == 3
-    assert result.metadata["rerank"]["top_n"] == 10
+    assert len(reranker.seen) == 4
+    assert result.metadata["rerank"]["candidate_count"] == 4
+    assert result.metadata["rerank"]["returned_count"] == 4
+    assert result.metadata["rerank"]["top_n"] == 4
     assert [chunk.chunk_id for chunk in result.retrieved_chunks] == [
         chunk["chunk_id"] for chunk in reversed(reranker.seen)
     ]
@@ -231,9 +231,7 @@ async def test_multi_kb_retrieve_processes_query_once_and_fuses_parallel_candida
 
     assert embedding.calls == ["refund"]
     assert query_pipeline.calls == [{"query": "refund", "knowledge_base": "kb-a"}]
-    assert vector_store.max_active == 2
-    assert {call["kb_id"] for call in vector_store.calls} == {"kb-a", "kb-b"}
-    assert {call["top_k"] for call in vector_store.calls} == {10}
+    assert vector_store.calls == [{"index_versions": {"kb-a": "v1", "kb-b": "v1"}, "top_k": 3}]
     assert knowledge_base_repository.get_by_ids_calls == [
         {"kb_ids": ["kb-a", "kb-b"], "tenant_id": "tenant-test"}
     ]
@@ -246,28 +244,16 @@ async def test_multi_kb_retrieve_processes_query_once_and_fuses_parallel_candida
     assert response.kb_id == "kb-a"
     assert response.kb_ids == ["kb-a", "kb-b"]
     assert response.metadata["index_versions"] == {"kb-a": "v1", "kb-b": "v1"}
-    assert response.metadata["retrieval"] == {
-        "mode": "vector",
-        "fusion": "rrf",
-        "rrf_k": 60,
-        "vector_store": "pgvector",
-        "keyword_search": None,
-        "vector_top_k": 10,
-        "bm25_top_k": 0,
-        "vector_count": 4,
-        "bm25_count": 0,
-        "fused_count": 3,
-        "multi_kb": True,
-        "kb_count": 2,
-        "per_kb_top_k": 10,
-        "per_kb_metadata": {
-            "kb-a": {"index_version": "v1"},
-            "kb-b": {"index_version": "v1"},
-        },
-        "graph_injected_count": 0,
-        "graph_selected_count": 0,
-        "graph_injection_latency_ms": 0,
-    }
+    metadata = response.metadata["retrieval"]
+    assert metadata["fusion"] == "none"
+    assert metadata["fusion_scope"] == "global"
+    assert metadata["vector_top_k"] == 3
+    assert metadata["vector_count"] == metadata["fused_count"] == 3
+    assert metadata["embedding_request_count"] == metadata["vector_request_count"] == 1
+    assert metadata["bm25_request_count"] == 0
+    assert not (
+        {"per_kb_top_k", "per_kb_metadata", "failed_kb_ids", "partial_kb_success"} & metadata.keys()
+    )
     assert rate_limit_service.check_calls == ["tenant-test"]
     assert rate_limit_service.record_calls == ["tenant-test"]
 
@@ -313,7 +299,7 @@ async def test_free_plan_rejects_multi_kb_before_search() -> None:
 
 def test_retrieve_request_requires_a_knowledge_base_and_rejects_empty_lists() -> None:
     with pytest.raises(ValidationError):
-        RagRetrieveRequest(user_id="user-test", query="refund")
+        RagRetrieveRequest(profile="custom", user_id="user-test", query="refund")
 
     with pytest.raises(ValidationError):
-        RagRetrieveRequest(kb_ids=[], user_id="user-test", query="refund")
+        RagRetrieveRequest(profile="custom", kb_ids=[], user_id="user-test", query="refund")

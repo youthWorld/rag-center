@@ -3,6 +3,16 @@ from typing import Any
 
 
 class KeywordSearchProvider(ABC):
+    async def keyword_search_scope(
+        self,
+        *,
+        query: str,
+        tenant_id: str,
+        index_versions: dict[str, str],
+        top_k: int = 20,
+    ) -> list[dict[str, Any]]:
+        raise NotImplementedError("global keyword search is required")
+
     @abstractmethod
     async def add_chunks(self, chunks: list[dict[str, Any]]) -> None:
         pass

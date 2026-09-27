@@ -3,6 +3,16 @@ from typing import Any
 
 
 class VectorStore(ABC):
+    async def similarity_search_scope(
+        self,
+        query_vector: list[float],
+        *,
+        tenant_id: str,
+        index_versions: dict[str, str],
+        top_k: int,
+    ) -> list[dict[str, Any]]:
+        raise NotImplementedError("global vector search is required")
+
     @abstractmethod
     async def add_chunks(self, chunks: list[dict[str, Any]]) -> None:
         pass

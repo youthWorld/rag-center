@@ -7,10 +7,10 @@ RetrievalSource = Literal["vector", "bm25", "hybrid", "graph"]
 
 
 class RetrievalOptions(BaseModel):
+    model_config = {"extra": "forbid"}
     mode: RetrievalMode | None = None
-    vector_top_k: int | None = Field(default=None, ge=1)
-    bm25_top_k: int | None = Field(default=None, ge=1)
-    rrf_k: int | None = Field(default=None, ge=1)
+    vector_top_k: int | None = Field(default=None, ge=1, le=100)
+    bm25_top_k: int | None = Field(default=None, ge=1, le=100)
 
 
 class HybridSearchChunk(BaseModel):

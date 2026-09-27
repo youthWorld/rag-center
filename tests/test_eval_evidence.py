@@ -171,7 +171,7 @@ def _runner(
         client=client,
         output_root=tmp_path,
         limit=limit,
-        settings=Settings(_env_file=None),
+        settings=Settings(hybrid_rrf_k=60, _env_file=None),
         tenant_id="tenant-eval",
         verifier=verifier,
     )

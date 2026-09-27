@@ -69,6 +69,8 @@ class FakeVectorStore(VectorStore):
     async def delete_by_document_id(self, document_id: str) -> None:
         del document_id
 
+    from tests.scope_fakes import vector_scope as similarity_search_scope
+
 
 class FakeKeywordSearchProvider(KeywordSearchProvider):
     def __init__(
@@ -102,6 +104,8 @@ class FakeKeywordSearchProvider(KeywordSearchProvider):
 
     async def delete_by_document_id(self, document_id: str) -> None:
         del document_id
+
+    from tests.scope_fakes import keyword_scope as keyword_search_scope
 
 
 class FakeKnowledgeBaseRepository:
@@ -242,24 +246,15 @@ async def test_hybrid_rejects_when_vector_and_bm25_both_fail() -> None:
 
 
 @pytest.mark.asyncio
-async def test_multi_kb_partial_failure_keeps_successful_chunks() -> None:
+async def test_multi_kb_scope_failure_fails_the_whole_vector_branch() -> None:
     service = _service(
         kb_ids=["kb-a", "kb-b"],
-        vector_results={"kb-b": [_chunk("kb-b", "chunk-b")]},
-        vector_fail_kb_ids={"kb-a"},
+        vector_results={"kb-a": [_chunk("kb-a", "a")]},
+        vector_fail_kb_ids={"kb-b"},
     )
-
-    response = await service.retrieve(
-        _request(multi=True),
-        tenant_id="tenant-test",
-    )
-
-    assert [chunk.chunk_id for chunk in response.retrieved_chunks] == ["chunk-b"]
-    retrieval = response.metadata["retrieval"]
-    assert retrieval["partial_kb_success"] is True
-    assert retrieval["failed_kb_ids"] == ["kb-a"]
-    assert retrieval["degraded"] is True
-    assert retrieval["per_kb_metadata"]["kb-a"]["error_type"] == "AppError"
+    with pytest.raises(AppError) as raised:
+        await service.retrieve(_request(multi=True), tenant_id="tenant-test")
+    assert raised.value.code == ErrorCode.RETRIEVAL_FAILED.code
 
 
 @pytest.mark.asyncio

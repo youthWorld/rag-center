@@ -1,6 +1,6 @@
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, PrivateAttr, field_validator, model_validator
 from typing_extensions import TypedDict
 
 from app.schemas.hybrid_search import RetrievalOptions, RetrievalSource
@@ -15,17 +15,20 @@ EmptyReason = Literal["no_indexed_chunks", "no_chunks_matched"]
 
 
 class QueryOptions(BaseModel):
+    model_config = {"extra": "forbid"}
     enabled: bool | None = None
     strategy: QueryRewriteStrategy | None = None
     synonym_enabled: bool | None = None
 
 
 class EvidenceOptions(BaseModel):
+    model_config = {"extra": "forbid"}
     enabled: bool | None = None
     max_items: int | None = Field(default=None, ge=1, le=20)
 
 
 class RagRetrieveRequest(BaseModel):
+    model_config = {"extra": "forbid"}
     kb_id: str | None = Field(default=None, min_length=1, max_length=36)
     kb_ids: list[str] | None = Field(
         default=None,
@@ -34,8 +37,8 @@ class RagRetrieveRequest(BaseModel):
     )
     user_id: str = Field(min_length=1, max_length=128)
     query: str
-    profile: RetrieveProfile | None = None
-    top_k: int | None = Field(default=None, ge=1)
+    profile: RetrieveProfile = "balanced"
+    top_k: int | None = Field(default=None, ge=1, le=50)
     retrieval_options: RetrievalOptions | None = None
     rerank_options: RerankOptions | None = None
     query_options: QueryOptions | None = None
@@ -76,6 +79,26 @@ class RagRetrieveRequest(BaseModel):
         if self.kb_id is None and not self.kb_ids:
             raise ValueError("either kb_id or kb_ids must be provided")
         return self
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_named_profile_overrides(cls, values: Any) -> Any:
+        if not isinstance(values, dict):
+            return values
+        profile = values.get("profile") or "balanced"
+        restricted = {
+            "top_k",
+            "retrieval_options",
+            "rerank_options",
+            "query_options",
+        }
+        if profile in {"speed", "balanced", "quality"}:
+            conflicts = sorted(field for field in restricted if field in values)
+            if conflicts:
+                raise ValueError(
+                    "命名检索档位不允许覆盖高级参数，请使用 custom: " + ",".join(conflicts)
+                )
+        return {**values, "profile": profile}
 
 
 class RetrievedChunk(BaseModel):
@@ -153,6 +176,9 @@ class RetrievalMetadata(TypedDict, total=False):
     mode: str
     fusion: str
     rrf_k: int | None
+    fusion_scope: str
+    kb_ids: list[str]
+    index_versions: dict[str, str]
     vector_store: str
     keyword_search: str | None
     vector_top_k: int
@@ -162,12 +188,19 @@ class RetrievalMetadata(TypedDict, total=False):
     fused_count: int
     multi_kb: bool
     kb_count: int | None
-    per_kb_top_k: int | None
     degraded: bool
     degraded_reason: str
-    failed_kb_ids: list[str] | None
-    partial_kb_success: bool
-    per_kb_metadata: dict[str, dict[str, Any]]
+    embedding_request_count: int
+    vector_request_count: int
+    bm25_request_count: int
+    base_candidate_count: int
+    rerank_input_count: int
+    vector_store_latency_ms: int
+    vector_latency_ms: int
+    embedding_latency_ms: int
+    bm25_latency_ms: int
+    hybrid_latency_ms: int
+    source_distribution: dict[str, int]
     empty_reason: EmptyReason
     index_version: str
     candidate_count_before_filter: int
@@ -201,6 +234,7 @@ class RetrieveMetadata(TypedDict, total=False):
 
 
 class RagRetrieveResponse(BaseModel):
+    _candidate_snapshot: list[dict[str, Any]] = PrivateAttr(default_factory=list)
     query: str
     kb_id: str
     kb_ids: list[str] = Field(default_factory=list)

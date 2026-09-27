@@ -35,9 +35,7 @@ class QueryPipeline:
     ) -> QueryProcessResult:
         context = QueryContext.from_knowledge_base(knowledge_base)
         rewrite_enabled, strategy = self._resolve_strategy(query_options)
-        synonym_enabled, explicit_synonym_enabled = self._resolve_synonym_enabled(
-            query_options
-        )
+        synonym_enabled, explicit_synonym_enabled = self._resolve_synonym_enabled(query_options)
         result = QueryProcessResult(
             raw_query=raw_query,
             effective_query=raw_query,
@@ -93,12 +91,12 @@ class QueryPipeline:
     @staticmethod
     def _resolve_synonym_enabled(query_options: Any) -> tuple[bool, bool | None]:
         if query_options is None:
-            return True, None
+            return False, False
         if isinstance(query_options, Mapping):
             requested = query_options.get("synonym_enabled")
         else:
             requested = getattr(query_options, "synonym_enabled", None)
         if requested is None:
-            return True, None
+            return False, False
         enabled = bool(requested)
         return enabled, enabled

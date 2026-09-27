@@ -68,7 +68,7 @@ class ResearchService:
         self.plan_resolver = plan_resolver
         self.rate_limit_service = rate_limit_service
         self.role_router = role_router or LLMRoleRouter(settings)
-        self.fusion_service = ResearchCandidateFusionService()
+        self.fusion_service = ResearchCandidateFusionService(rrf_k=settings.hybrid_rrf_k)
         self.parallel_service = ResearchParallelRetrievalService(retrieve_executor)
         self.evidence_service = ResearchEvidenceService(chunk_repository)
         self.logger = get_logger(__name__)
@@ -88,9 +88,7 @@ class ResearchService:
         kb_ids = request.resolved_kb_ids()
         plan = await self._resolve_plan(tenant_id, tenant=tenant)
         self._enforce_policy(plan, kb_ids=kb_ids)
-        knowledge_bases = await self._load_knowledge_bases(
-            tenant_id=tenant_id, kb_ids=kb_ids
-        )
+        knowledge_bases = await self._load_knowledge_bases(tenant_id=tenant_id, kb_ids=kb_ids)
         index_versions = {
             str(kb.id): str(getattr(kb, "active_index_version", None) or "v1")
             for kb in knowledge_bases
@@ -229,8 +227,7 @@ class ResearchService:
                     stop_conditions.append("degraded")
                 merged = self.fusion_service.merge([*round_one.results, *round_two.results])
                 new_count = sum(
-                    (candidate.kb_id, candidate.index_version, candidate.chunk_id)
-                    not in old_keys
+                    (candidate.kb_id, candidate.index_version, candidate.chunk_id) not in old_keys
                     for candidate in merged
                 )
                 round_two.round.candidate_count = len(merged)
@@ -297,7 +294,14 @@ class ResearchService:
             state.stop_reason = stop_reason
             if self.rate_limit_service is not None:
                 await self.rate_limit_service.record_retrieve_success(tenant_id)
+            application_details = {
+                **state.retrieval_model_call_details,
+                "research_roles": state.llm_call_count,
+            }
             metadata = ResearchMetadata(
+                application_model_calls=sum(application_details.values()),
+                application_model_call_details=application_details,
+                rrf_k=self.settings.hybrid_rrf_k,
                 research_id=research_id,
                 log_id=log_id,
                 trace_id=observability.trace_id,
@@ -346,6 +350,8 @@ class ResearchService:
                     "round_count": state.round_count,
                     "retrieval_task_count": state.retrieval_task_count,
                     "llm_call_count": state.llm_call_count,
+                    "application_model_calls": sum(application_details.values()),
+                    "application_model_call_details": application_details,
                     "input_tokens": state.input_tokens,
                     "output_tokens": state.output_tokens,
                     "stop_reason": stop_reason,
@@ -374,9 +380,7 @@ class ResearchService:
                 f"query must not exceed {self.settings.query_max_length} characters",
             )
 
-    async def _resolve_plan(
-        self, tenant_id: str, *, tenant: Any | None
-    ) -> PlanContext:
+    async def _resolve_plan(self, tenant_id: str, *, tenant: Any | None) -> PlanContext:
         if tenant is not None:
             return self.plan_resolver.resolve(tenant)
         return await self.plan_resolver.resolve_for_tenant_id(tenant_id)
@@ -398,12 +402,8 @@ class ResearchService:
                 },
             )
 
-    async def _load_knowledge_bases(
-        self, *, tenant_id: str, kb_ids: list[str]
-    ) -> list[Any]:
-        items = await self.knowledge_base_repository.get_by_ids(
-            tenant_id=tenant_id, kb_ids=kb_ids
-        )
+    async def _load_knowledge_bases(self, *, tenant_id: str, kb_ids: list[str]) -> list[Any]:
+        items = await self.knowledge_base_repository.get_by_ids(tenant_id=tenant_id, kb_ids=kb_ids)
         by_id = {str(item.id): item for item in items}
         missing = [kb_id for kb_id in kb_ids if kb_id not in by_id]
         if missing:

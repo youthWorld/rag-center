@@ -13,7 +13,9 @@ from app.providers.rerank.base import RerankProvider
 LOGGER = logging.getLogger(__name__)
 ENDPOINT = "/services/rerank/text-rerank/text-rerank"
 INSTRUCT = (
-    "Given a question, retrieve passages that contain evidence needed to answer the question."
+    "只提高能够直接回答问题并提供明确规则、条件、时间、金额或结论的片段；"
+    "降低仅主题相似、只提供背景、需要推测、重复或高度重叠片段的排名；"
+    "多子问题优先覆盖全部子问题。"
 )
 
 
@@ -28,16 +30,22 @@ class Qwen37RerankProvider(RerankProvider):
         model: str = "qwen3.7-text-rerank",
         timeout_seconds: int = 15,
         transport: httpx.AsyncBaseTransport | None = None,
+        client: httpx.AsyncClient | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.model = model
         self.timeout_seconds = timeout_seconds
         self.transport = transport
+        self.client = client
+        self._owns_client = client is None
 
     @classmethod
-    def from_settings(cls, settings: Settings) -> "Qwen37RerankProvider":
+    def from_settings(
+        cls, settings: Settings, *, client: httpx.AsyncClient | None = None
+    ) -> "Qwen37RerankProvider":
         return cls(
+            client=client,
             base_url=settings.rerank_base_url,
             api_key=settings.rerank_api_key or settings.model_api_key,
             model=settings.rerank_model,
@@ -60,20 +68,21 @@ class Qwen37RerankProvider(RerankProvider):
         documents = [self._build_document(item) for item in candidates]
         started = time.perf_counter()
         try:
-            async with httpx.AsyncClient(
-                timeout=self.timeout_seconds, transport=self.transport
-            ) as client:
-                response = await client.post(
-                    f"{self.base_url}{ENDPOINT}",
-                    headers={"Authorization": f"Bearer {self.api_key}"},
-                    json={
-                        "model": self.model,
-                        "input": {"query": query, "documents": documents},
-                        "parameters": {"top_n": limit, "instruct": INSTRUCT},
-                    },
-                )
-                response.raise_for_status()
-                payload = response.json()
+            if self.client is None:
+                self.client = httpx.AsyncClient(transport=self.transport)
+            response = await self.client.post(
+                f"{self.base_url}{ENDPOINT}",
+                headers={"Authorization": f"Bearer {self.api_key}"},
+                timeout=self.timeout_seconds,
+                follow_redirects=False,
+                json={
+                    "model": self.model,
+                    "input": {"query": query, "documents": documents},
+                    "parameters": {"top_n": limit, "instruct": INSTRUCT},
+                },
+            )
+            response.raise_for_status()
+            payload = response.json()
         except httpx.HTTPStatusError as exc:
             raise ValueError(f"rerank HTTP {exc.response.status_code}") from None
         except httpx.TimeoutException:
@@ -119,3 +128,7 @@ class Qwen37RerankProvider(RerankProvider):
         if retrieval_text:
             return retrieval_text[:1024]
         return f"标题：{chunk.get('title') or ''}\n正文：{str(chunk.get('content') or '')[:1024]}"
+
+    async def close(self) -> None:
+        if self._owns_client and self.client is not None:
+            await self.client.aclose()

@@ -1,15 +1,17 @@
 from collections.abc import AsyncIterator
 
-from fastapi import Depends
+from fastapi import Depends, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings, settings
 from app.core.exceptions import ServiceConfigurationError
+from app.core.http_clients import ExternalClients
 from app.db.session import get_db, session_factory
 from app.providers.embedding.openai_compatible import OpenAICompatibleEmbeddingProvider
 from app.providers.keyword_search.base import KeywordSearchProvider
 from app.providers.keyword_search.elasticsearch import ElasticsearchKeywordSearchProvider
 from app.providers.llm.openai_compatible import OpenAICompatibleLLMProvider
+from app.providers.llm.role_router import LLMRoleRouter
 from app.providers.query.llm_rewrite import LLMRewriteProcessor
 from app.providers.query.pipeline import QueryPipeline
 from app.providers.rerank.base import RerankProvider
@@ -34,17 +36,28 @@ from app.services.retrieve_once_service import RetrieveOnceService
 from app.tenant.plan_resolver import PlanResolver
 
 
+def get_external_clients(request: Request) -> ExternalClients:
+    clients = getattr(request.app.state, "external_clients", None)
+    if clients is None or clients._closed:
+        raise ServiceConfigurationError(
+            internal_message="external clients lifecycle is unavailable"
+        )
+    return clients
+
+
 def get_settings() -> Settings:
     return settings
 
 
-def get_llm_provider(app_settings: Settings) -> OpenAICompatibleLLMProvider:
+def get_llm_provider(
+    app_settings: Settings, clients: ExternalClients | None = None
+) -> OpenAICompatibleLLMProvider:
     if app_settings.llm_provider != "openai_compatible":
         raise ServiceConfigurationError(
             internal_message=f"unsupported LLM_PROVIDER: {app_settings.llm_provider}",
             context={"provider": app_settings.llm_provider},
         )
-    return OpenAICompatibleLLMProvider(app_settings)
+    return OpenAICompatibleLLMProvider(app_settings, http_client=clients.model if clients else None)
 
 
 def get_plan_resolver(
@@ -72,13 +85,21 @@ async def get_rate_limit_service(
         await service.close()
 
 
-def get_rerank_provider(app_settings: Settings) -> RerankProvider:
-    return Qwen37RerankProvider.from_settings(app_settings)
+def get_rerank_provider(
+    app_settings: Settings, clients: ExternalClients | None = None
+) -> RerankProvider:
+    return Qwen37RerankProvider.from_settings(
+        app_settings, client=clients.model if clients else None
+    )
 
 
-def get_keyword_search_provider(app_settings: Settings) -> KeywordSearchProvider:
+def get_keyword_search_provider(
+    app_settings: Settings, clients: ExternalClients | None = None
+) -> KeywordSearchProvider:
     if app_settings.keyword_search_provider == "elasticsearch":
-        return ElasticsearchKeywordSearchProvider(app_settings)
+        return ElasticsearchKeywordSearchProvider(
+            app_settings, client=clients.elasticsearch if clients else None
+        )
     raise ServiceConfigurationError(
         internal_message=(
             f"unsupported KEYWORD_SEARCH_PROVIDER: {app_settings.keyword_search_provider}"
@@ -88,10 +109,11 @@ def get_keyword_search_provider(app_settings: Settings) -> KeywordSearchProvider
 
 
 def get_indexing_service(
+    clients: ExternalClients = Depends(get_external_clients),
     session: AsyncSession = Depends(get_db),
     app_settings: Settings = Depends(get_settings),
 ) -> IndexingService:
-    return build_indexing_service(session, app_settings)
+    return build_indexing_service(session, app_settings, clients=clients)
 
 
 def get_knowledge_base_service(
@@ -144,20 +166,23 @@ def get_document_service(
 
 
 def get_rag_service(
+    clients: ExternalClients = Depends(get_external_clients),
     session: AsyncSession = Depends(get_db),
     app_settings: Settings = Depends(get_settings),
     plan_resolver: PlanResolver = Depends(get_plan_resolver),
     rate_limit_service: RateLimitService = Depends(get_rate_limit_service),
 ) -> RagService:
-    llm_provider = get_llm_provider(app_settings)
+    llm_provider = get_llm_provider(app_settings, clients)
     return RagService(
         session=session,
         settings=app_settings,
         knowledge_base_repository=KnowledgeBaseRepository(session),
-        embedding_provider=OpenAICompatibleEmbeddingProvider(app_settings),
-        vector_store=PgVectorStore(session),
-        keyword_search_provider_factory=lambda: get_keyword_search_provider(app_settings),
-        rerank_provider=get_rerank_provider(app_settings),
+        embedding_provider=OpenAICompatibleEmbeddingProvider(
+            app_settings, http_client=clients.model
+        ),
+        vector_store=PgVectorStore(session, read_session_factory=session_factory),
+        keyword_search_provider_factory=lambda: get_keyword_search_provider(app_settings, clients),
+        rerank_provider=get_rerank_provider(app_settings, clients),
         plan_resolver=plan_resolver,
         rate_limit_service=rate_limit_service,
         query_pipeline=QueryPipeline(
@@ -176,16 +201,18 @@ def get_rag_service(
 
 
 def _build_internal_rag_service(
-    session: AsyncSession, app_settings: Settings
+    session: AsyncSession, app_settings: Settings, clients: ExternalClients
 ) -> RagService:
     return RagService(
         session=session,
         settings=app_settings,
         knowledge_base_repository=KnowledgeBaseRepository(session),
-        embedding_provider=OpenAICompatibleEmbeddingProvider(app_settings),
-        vector_store=PgVectorStore(session),
-        keyword_search_provider_factory=lambda: get_keyword_search_provider(app_settings),
-        rerank_provider=get_rerank_provider(app_settings),
+        embedding_provider=OpenAICompatibleEmbeddingProvider(
+            app_settings, http_client=clients.model
+        ),
+        vector_store=PgVectorStore(session, read_session_factory=session_factory),
+        keyword_search_provider_factory=lambda: get_keyword_search_provider(app_settings, clients),
+        rerank_provider=get_rerank_provider(app_settings, clients),
         query_pipeline=QueryPipeline(rewrite_enabled=False),
         evidence_orchestration_service=None,
         plan_resolver=None,
@@ -194,6 +221,7 @@ def _build_internal_rag_service(
 
 
 def get_research_service(
+    clients: ExternalClients = Depends(get_external_clients),
     session: AsyncSession = Depends(get_db),
     app_settings: Settings = Depends(get_settings),
     plan_resolver: PlanResolver = Depends(get_plan_resolver),
@@ -201,7 +229,7 @@ def get_research_service(
 ) -> ResearchService:
     async def retrieve_executor(**kwargs):
         async with session_factory() as task_session:
-            rag_service = _build_internal_rag_service(task_session, app_settings)
+            rag_service = _build_internal_rag_service(task_session, app_settings, clients)
             return await RetrieveOnceService(rag_service).execute(**kwargs)
 
     return ResearchService(
@@ -211,6 +239,7 @@ def get_research_service(
         plan_resolver=plan_resolver,
         rate_limit_service=rate_limit_service,
         retrieve_executor=retrieve_executor,
+        role_router=LLMRoleRouter(app_settings, http_client=clients.model),
     )
 
 

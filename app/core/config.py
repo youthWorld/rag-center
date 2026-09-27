@@ -1,6 +1,6 @@
 from functools import lru_cache
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -18,6 +18,9 @@ class Settings(BaseSettings):
 
     model_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     model_api_key: str = ""
+    model_http_max_connections: int = Field(default=100, ge=1)
+    model_http_max_keepalive_connections: int = Field(default=20, ge=0)
+    model_http_keepalive_expiry_seconds: float = Field(default=30.0, gt=0, allow_inf_nan=False)
     embedding_model: str = "qwen3.7-text-embedding"
     embedding_dimensions: int = 1536
     embedding_batch_size: int = Field(
@@ -45,7 +48,7 @@ class Settings(BaseSettings):
     elasticsearch_index: str = "rag_chunks"
     retrieval_mode: str = "vector"
     hybrid_fusion: str = "rrf"
-    hybrid_rrf_k: int = 60
+    hybrid_rrf_k: int = Field(..., ge=1)
     hybrid_vector_top_k: int = 20
     hybrid_bm25_top_k: int = 20
     hybrid_top_n: int = 20
@@ -76,6 +79,14 @@ class Settings(BaseSettings):
     log_rotation_interval: int = 1
     log_console_color: bool = True
     log_payload_max_length: int = 2000
+
+    @model_validator(mode="after")
+    def validate_model_connection_limits(self) -> "Settings":
+        if self.model_http_max_keepalive_connections > self.model_http_max_connections:
+            raise ValueError(
+                "MODEL_HTTP_MAX_KEEPALIVE_CONNECTIONS must not exceed MODEL_HTTP_MAX_CONNECTIONS"
+            )
+        return self
 
     model_config = SettingsConfigDict(
         env_file=".env",

@@ -9,6 +9,11 @@ from app.services.retrieve_once_service import RetrieveOnceResult
 
 
 class ResearchCandidateFusionService:
+    def __init__(self, *, rrf_k: int) -> None:
+        if rrf_k < 1:
+            raise ValueError("rrf_k must be positive")
+        self.rrf_k = rrf_k
+
     def merge(self, results: list[RetrieveOnceResult]) -> list[ResearchCandidate]:
         merged: dict[tuple[str, str, str], ResearchCandidate] = {}
         content_keys: dict[tuple[str, str, str], tuple[str, str, str]] = {}
@@ -26,18 +31,16 @@ class ResearchCandidateFusionService:
                     key = content_keys.setdefault(content_key, key)
                 if key not in merged:
                     raw.best_rank = rank
-                    raw.fusion_score = 1 / (60 + rank)
+                    raw.fusion_score = 1 / (self.rrf_k + rank)
                     merged[key] = raw
                 else:
                     candidate = merged[key]
-                    candidate.aspect_ids = self._merge_values(
-                        candidate.aspect_ids, raw.aspect_ids
-                    )
+                    candidate.aspect_ids = self._merge_values(candidate.aspect_ids, raw.aspect_ids)
                     candidate.query_ids = self._merge_values(candidate.query_ids, raw.query_ids)
                     candidate.rounds = sorted(set([*candidate.rounds, *raw.rounds]))
                     candidate.best_rank = min(candidate.best_rank or rank, rank)
                     if key not in seen_for_task:
-                        candidate.fusion_score += 1 / (60 + rank)
+                        candidate.fusion_score += 1 / (self.rrf_k + rank)
                     sources = list(candidate.metadata.get("sources") or [candidate.source])
                     if raw.source not in sources:
                         sources.append(raw.source)

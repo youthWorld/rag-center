@@ -165,9 +165,6 @@ class RetrieveObservability:
         fused_count: int,
         degraded: bool,
         degraded_reason: str | None,
-        failed_kb_ids: list[str] | None = None,
-        partial_kb_success: bool = False,
-        per_kb_metadata: dict[str, dict[str, Any]] | None = None,
         empty_reason: str | None = None,
     ) -> None:
         output: dict[str, Any] = {
@@ -177,12 +174,6 @@ class RetrieveObservability:
             "degraded": degraded,
             "degraded_reason": degraded_reason,
         }
-        if failed_kb_ids:
-            output["failed_kb_ids"] = failed_kb_ids
-        if partial_kb_success:
-            output["partial_kb_success"] = True
-        if per_kb_metadata:
-            output["per_kb_metadata"] = per_kb_metadata
         if empty_reason is not None:
             output["empty_reason"] = empty_reason
         self._record_span(
@@ -205,19 +196,30 @@ class RetrieveObservability:
             output={"degraded": degraded, "error": error},
         )
 
-    def finish(self, *, log_id: str | None = None, chunks: list[dict[str, Any]]) -> None:
+    def finish(
+        self,
+        *,
+        log_id: str | None = None,
+        chunks: list[dict[str, Any]],
+        model_calls: dict[str, int] | None = None,
+    ) -> None:
         if self.trace is None:
             return
         resolved_log_id = log_id or self.log_id
         self._safe_trace_update(
             output={
                 "chunks": [
-                    {"chunk_id": chunk["chunk_id"], "score": chunk["score"]}
-                    for chunk in chunks
+                    {"chunk_id": chunk["chunk_id"], "score": chunk["score"]} for chunk in chunks
                 ]
             },
             **(
-                {"metadata": {"log_id": resolved_log_id}}
+                {
+                    "metadata": {
+                        "log_id": resolved_log_id,
+                        "application_model_call_details": model_calls,
+                        "application_model_calls": sum((model_calls or {}).values()),
+                    }
+                }
                 if resolved_log_id
                 else {}
             ),

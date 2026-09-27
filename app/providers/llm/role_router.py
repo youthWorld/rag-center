@@ -12,8 +12,9 @@ class LLMRole(StrEnum):
 
 
 class LLMRoleRouter:
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, *, http_client=None) -> None:
         self.settings = settings
+        self.http_client = http_client
 
     def model_for(self, role: LLMRole) -> str:
         if role == LLMRole.STRONG:
@@ -24,4 +25,5 @@ class LLMRoleRouter:
         return OpenAICompatibleLLMProvider(
             self.settings,
             model_override=self.model_for(role),
+            http_client=self.http_client,
         )

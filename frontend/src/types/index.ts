@@ -129,13 +129,13 @@ export type QueryRewriteStrategy = "noop" | "rewrite";
 export type QueryOptions = {
   enabled?: boolean;
   strategy?: QueryRewriteStrategy;
+  synonym_enabled?: boolean;
 };
 
 export type RetrievalOptions = {
   mode: RetrievalMode;
   vector_top_k?: number;
   bm25_top_k?: number;
-  rrf_k?: number;
 };
 
 export type RerankOptions = {
@@ -244,6 +244,8 @@ export type RetrievedChunk = {
 };
 
 export type RetrievalMetadata = {
+  application_model_calls?: number;
+  application_model_call_details?: Record<string, number>;
   log_id?: string;
   trace_id?: string | null;
   top_k?: number;
@@ -258,9 +260,20 @@ export type RetrievalMetadata = {
     mode?: RetrievalMode;
     multi_kb?: boolean;
     kb_count?: number;
-    per_kb_top_k?: number;
     fusion?: string | null;
     rrf_k?: number | null;
+    fusion_scope?: string;
+    base_candidate_count?: number;
+    rerank_input_count?: number;
+    embedding_request_count?: number;
+    vector_request_count?: number;
+    bm25_request_count?: number;
+    embedding_latency_ms?: number;
+    vector_store_latency_ms?: number;
+    vector_latency_ms?: number;
+    bm25_latency_ms?: number;
+    hybrid_latency_ms?: number;
+    source_distribution?: Record<string, number>;
     vector_top_k?: number;
     bm25_top_k?: number;
     vector_count?: number;
@@ -368,6 +381,9 @@ export type ResearchStageUsage = {
 };
 
 export type ResearchMetadata = {
+  application_model_calls?: number;
+  application_model_call_details?: Record<string, number>;
+  rrf_k?: number;
   research_id: string;
   log_id: string;
   trace_id?: string | null;

@@ -55,7 +55,6 @@ class RetrieveOnceService:
                 mode="hybrid",
                 vector_top_k=20,
                 bm25_top_k=20,
-                rrf_k=self.rag_service.settings.hybrid_rrf_k,
             ),
             rerank_options=RerankOptions(enabled=True, top_n=10),
             query_options=QueryOptions(
@@ -94,7 +93,7 @@ class RetrieveOnceService:
                 frozen_index_versions=index_versions,
             )
         metadata = dict(response.metadata)
-        snapshot = metadata.pop("_candidate_snapshot", [])
+        snapshot = response._candidate_snapshot
         retrieval_metadata = metadata.get("retrieval") or {}
         rerank_metadata = metadata.get("rerank") or {}
         degraded = bool(

@@ -2,6 +2,7 @@ import json
 import time
 from typing import Any
 
+import httpx
 from openai import AsyncOpenAI
 
 from app.core.config import Settings
@@ -10,6 +11,7 @@ from app.core.exceptions import (
     ServiceConfigurationError,
     map_llm_exception,
 )
+from app.core.http_clients import BorrowedAsyncOpenAI
 from app.core.logging import get_logger, log_llm_call
 from app.providers.llm.base import (
     LLMCallMetadata,
@@ -20,10 +22,17 @@ from app.providers.llm.base import (
 
 
 class OpenAICompatibleLLMProvider(LLMProvider):
-    def __init__(self, settings: Settings, *, model_override: str | None = None) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        *,
+        model_override: str | None = None,
+        http_client: httpx.AsyncClient | None = None,
+    ) -> None:
         self.settings = settings
         self.model = model_override or settings.llm_model
         self._client: AsyncOpenAI | None = None
+        self.http_client = http_client
         self.logger = get_logger(__name__)
 
     def _get_client(self) -> AsyncOpenAI:
@@ -33,9 +42,11 @@ class OpenAICompatibleLLMProvider(LLMProvider):
                 context={"provider": type(self).__name__},
             )
         if self._client is None:
-            self._client = AsyncOpenAI(
+            client_type = BorrowedAsyncOpenAI if self.http_client is not None else AsyncOpenAI
+            self._client = client_type(
                 api_key=self.settings.llm_api_key,
                 base_url=self.settings.llm_base_url,
+                http_client=self.http_client,
             )
         return self._client
 
@@ -51,9 +62,7 @@ class OpenAICompatibleLLMProvider(LLMProvider):
 
         choice = choices[0]
         message = (
-            choice.get("message")
-            if isinstance(choice, dict)
-            else getattr(choice, "message", None)
+            choice.get("message") if isinstance(choice, dict) else getattr(choice, "message", None)
         )
         content = (
             message.get("content")
@@ -160,9 +169,7 @@ class OpenAICompatibleLLMProvider(LLMProvider):
                 ),
                 finish_reason=self._finish_reason(response),
                 input_tokens=self._usage_value(response, "prompt_tokens", "input_tokens"),
-                output_tokens=self._usage_value(
-                    response, "completion_tokens", "output_tokens"
-                ),
+                output_tokens=self._usage_value(response, "completion_tokens", "output_tokens"),
                 total_tokens=self._usage_value(response, "total_tokens"),
             ),
         )
@@ -266,3 +273,7 @@ class OpenAICompatibleLLMProvider(LLMProvider):
                 operation=operation,
             ) from exception
         return response
+
+    async def close(self) -> None:
+        if self.http_client is None and self._client is not None:
+            await self._client.close()

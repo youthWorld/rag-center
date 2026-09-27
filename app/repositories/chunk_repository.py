@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.chunk import Chunk
 from app.models.document import Document, DocumentStatus
+from app.services.retrieval_usage import record_request
 
 
 class ChunkRepository:
@@ -44,20 +45,42 @@ class ChunkRepository:
         top_k: int,
         index_version: str | None = None,
     ) -> list[tuple[Chunk, float]]:
+        return await self.similarity_search_scope(
+            query_vector,
+            tenant_id=tenant_id,
+            index_versions={kb_id: index_version or "v1"},
+            top_k=top_k,
+        )
+
+    async def similarity_search_scope(
+        self,
+        query_vector: list[float],
+        *,
+        tenant_id: str,
+        index_versions: dict[str, str],
+        top_k: int,
+    ) -> list[tuple[Chunk, float]]:
+        if not index_versions:
+            return []
         distance = Chunk.embedding.cosine_distance(query_vector)
         statement = (
             select(Chunk, (1 - distance).label("score"))
             .join(Document, Chunk.document_id == Document.id)
             .where(
                 Chunk.tenant_id == tenant_id,
-                Chunk.kb_id == kb_id,
+                Document.tenant_id == tenant_id,
                 Document.status == int(DocumentStatus.SUCCESS),
+                or_(
+                    *(
+                        and_(Chunk.kb_id == kb, Chunk.index_version == version)
+                        for kb, version in sorted(index_versions.items())
+                    )
+                ),
             )
-            .order_by(distance)
+            .order_by(distance, Chunk.kb_id, Chunk.id)
             .limit(top_k)
         )
-        if index_version is not None:
-            statement = statement.where(Chunk.index_version == index_version)
+        record_request("vector")
         result = await self.session.execute(statement)
         return [(chunk, float(score)) for chunk, score in result.all()]
 

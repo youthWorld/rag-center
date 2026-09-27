@@ -231,11 +231,11 @@ uv run python scripts/verify_parser_12.py `
 
 接口只返回结构化召回 chunk、引用来源、分数和检索元数据，不生成最终答案。业务方可以使用这些上下文调用自己的大模型或编排服务。
 
-`profile` 未传时默认使用 `balanced`。`speed` 向量检索最多返回 Top5，`balanced` 混合检索最多返回 Top10，两者不精排；`quality` 从向量与 BM25 召回、经 RRF 融合最多 Top20 候选，交给 qwen3.7-text-rerank 精排后最多返回 Top10，并保留 query 改写和同义词扩展。`custom` 保留请求中的 `retrieval_options`、`rerank_options` 和 `query_options`。可用 profile 和能力上限由租户套餐决定。
+`profile` 未传或为 null 时默认使用 `balanced`，仍检查套餐权限。三档最终均最多5条：speed 为全局 Vector10；balanced 为全局 Vector10 + BM2510；quality 开启改写，以全局 Vector20 + BM2520 融合、过滤得到最多20条基础候选，额外图候选最多10条，精排输入最多30条，最终最多5条。同义词默认关闭。
 
-检索配置按字段确定优先级：先检查套餐是否允许所选 profile 和最终生效的功能，再由命名 profile 的预设覆盖请求中同名字段；预设未定义的字段仍可由请求提供。`custom` 不展开预设，显式请求值优先，未传的字段依次使用实际环境配置和代码默认值。前端与 curl 的请求优先级相同。即使某字段会被预设覆盖，请求仍须满足 API Schema 的类型和范围校验。环境中的 `RERANK_ENABLED` 与 `QUERY_REWRITE_ENABLED` 是缺省值，不是能否决 profile 或显式请求的全局禁用开关；套餐限制始终有效。
+命名档位禁止显式提交 `top_k`、`retrieval_options`、`rerank_options`、`query_options`，包括 null、空对象和恰好等于预设的值。顶层及嵌套未知字段均报错。`evidence_options` 独立配置，所有档位均可提交，沿用 Pro 权限；优先级为请求显式值 → `EVIDENCE_ENABLED` → false。环境中的精排/改写开关是缺省值，不否决合法显式请求或命名预设，套餐权限始终有效。
 
-`custom` 下 hybrid 检索的 `top_k` 控制融合后送往后续阶段的候选数量（启用重排时最终返回数量由 `rerank_options.top_n` 控制）；若未传 `retrieval_options.vector_top_k` 或 `bm25_top_k`，分别回退到 `HYBRID_VECTOR_TOP_K` 和 `HYBRID_BM25_TOP_K`，不再跟随请求的 `top_k`。改写的 `query_options.enabled` 若显式传入，优先于 `strategy`：`true` 表示改写，`false` 表示不改写；未传 `enabled` 才由 `strategy` 决定或回退到配置。调试台自定义模式取消勾选重排或改写时会显式发送 `enabled:false`；curl 省略该字段则使用服务端缺省值。
+`custom` 的 `top_k` 是最终返回上限（1—50）；全库合计 `vector_top_k` / `bm25_top_k` 各为1—100，精排 `top_n` 为1—50。未指定 top_n 时跟随 top_k，实际最多为 min(top_n 或 top_k, top_k, 候选数)。vector 不接受显式 bm25_top_k，bm25 不接受显式 vector_top_k。未指定召回数使用对应环境配置。改写的 `query_options.enabled` 若显式传入，优先于 `strategy`。
 
 使用 `custom` profile 时，可以通过请求体覆盖检索参数：
 
@@ -249,8 +249,7 @@ uv run python scripts/verify_parser_12.py `
   "retrieval_options": {
     "mode": "hybrid",
     "vector_top_k": 20,
-    "bm25_top_k": 20,
-    "rrf_k": 60
+    "bm25_top_k": 20
   }
 }
 ```
@@ -276,7 +275,19 @@ hybrid 模式先合并两路召回结果，再按 `1 / (rrf_k + rank)` 计算 RR
 
 启用后，接口保留原始融合分数 `score`，并在 `retrieved_chunks` 中返回 `rerank_score`。失败时按 RRF 顺序回退到最多 `top_n` 条，分数为 null。
 
-生产精排使用百炼 `qwen3.7-text-rerank` 原生 API（`/api/v1/services/rerank/text-rerank/text-rerank`），不能使用旧模型的 compatible `/reranks` 接口。环境配置为 `RERANK_BASE_URL`（已开通模型的公共端点可用 `https://dashscope.aliyuncs.com/api/v1`，也可用工作空间的 `/api/v1` 地址）、`RERANK_API_KEY`（空值复用 `MODEL_API_KEY`）、`RERANK_MODEL`、`RERANK_TIMEOUT_SECONDS` 及默认 `RERANK_TOP_N`；旧 LLM 重排仅供统一离线评测作 baseline。本地评测租户 Key 写入 `EVAL_API_KEY`，不要提交真实值。完整示例见 `.env.example`。
+生产精排使用百炼 `qwen3.7-text-rerank` 原生 API，地址、凭证、模型和超时配置见 `.env.example`。精排使用实际 search_query 及统一中文相关性指令；top_n 缺省跟随 top_k，不读取旧的固定精排数量兜底。本地评测租户 Key 写入 `EVAL_API_KEY`，不要提交真实值。
+
+### 检索资源与统计
+
+RRF 只读取必填正整数 `HYBRID_RRF_K`，公开请求不得包含 `rrf_k`。单库和多库均在固定租户及成对库/版本范围内进行一次全局召回，无每库保底配额；Embedding → 独立只读 SQL 与 BM25 并行。单路失败保留成功路，ES 超时或分片失败不采用部分结果，两路失败返回20003；父取消不会伪装为降级。
+
+FastAPI lifespan 统一持有模型 HTTP 池与独立 ES SDK 池，Provider 只借用。模型池配置为 `MODEL_HTTP_MAX_CONNECTIONS=100`、`MODEL_HTTP_MAX_KEEPALIVE_CONNECTIONS=20`、`MODEL_HTTP_KEEPALIVE_EXPIRY_SECONDS=30`；这是部署起点，不是容量结论。脚本自行关闭自有客户端；Celery 仍在每个任务事件循环内创建、清理资源。
+
+`metadata.application_model_calls` 包含实际发起的 Rewrite、Embedding、精排及 Evidence 逻辑调用；失败调用计入，SDK 重试不重复计数，详情与总数一致。SQL/ES 不属于模型调用，另见 retrieval 的 embedding/vector/bm25_request_count。Research 总数包含子检索及角色调用，但 `llm_call_count` 仍仅用于原有角色预算，不改变配额和终止规则。
+
+retrieval metadata 保留成对范围、全局融合、阶段数量和最终来源分布，删除旧逐库执行字段。fused_count 是融合身份去重后、后过滤及截断前数量。新增 Embedding、SQL、Vector、BM25、Hybrid 墙钟耗时，Hybrid 不是两路耗时之和。原 latency_ms 仍仅从 Query 处理后到 Context 完成，不包含 Rewrite、Evidence 和收尾。
+
+Research 仍为 research_fixed：Hybrid20+20、top_k20、精排Top10，关闭 Rewrite/同义词/Evidence LLM；共享全局召回和连接池，不套用公开 quality 预算。
 
 ### 提问语义优化
 
@@ -287,6 +298,7 @@ hybrid 模式先合并两路召回结果，再按 `1 / (rrf_k + rank)` 计算 RR
   "kb_id": "<knowledge-base-id>",
   "user_id": "user_demo",
   "query": "背调要问啥",
+  "profile": "custom",
   "query_options": {
     "enabled": true,
     "strategy": "rewrite"
@@ -296,7 +308,7 @@ hybrid 模式先合并两路召回结果，再按 `1 / (rrf_k + rank)` 计算 RR
 
 改写使用已有的 `LLM_PROVIDER`、`LLM_BASE_URL`、`LLM_API_KEY` 和 `LLM_MODEL`，全局默认由 `QUERY_REWRITE_ENABLED=false` 关闭，超时由 `QUERY_REWRITE_TIMEOUT_MS` 控制。LLM 失败时会回退到用户原话，不影响检索；改写耗时单独记录在 `metadata.query_processing.rewrite_latency_ms`，不计入检索 `latency_ms`。
 
-知识库的 `settings` 字段可配置词表扩展。词表始终在改写之后执行，即使没有启用 LLM 改写也会生效：
+知识库的 `settings` 字段可配置词表扩展。显式开启 `query_options.synonym_enabled` 后词表在改写之后执行，默认关闭。多库使用授权库 ID 字符串升序首库作为改写和词表参考：
 
 ```json
 {

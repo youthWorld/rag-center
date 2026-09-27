@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.logging import get_logger
 from app.models.chunk import Chunk
 from app.services.chunk_relation_resolver import RELATION_PRIORITY, ChunkRelationResolver
+from app.utils.markdown_splitter import is_low_information_content, normalize_content
 
 MAX_GRAPH_SEEDS = 10
 MAX_INJECTED_CHUNKS_PER_SEED = 3
@@ -40,13 +41,19 @@ class GraphCandidateExpansionService:
         kb_ids: list[str],
         seeds: list[dict[str, Any]],
         index_version: str = "v2",
+        max_injected: int | None = None,
     ) -> GraphCandidateExpansionResult:
         started = time.perf_counter()
         result = GraphCandidateExpansionResult()
         if not seeds:
             return result
 
-        existing_ids = {str(seed.get("chunk_id")) for seed in seeds if seed.get("chunk_id")}
+        existing_ids = {(str(seed.get("kb_id") or ""), str(seed.get("chunk_id"))) for seed in seeds}
+        seen_content = {
+            (str(seed.get("kb_id") or ""), normalize_content(str(seed.get("content") or "")))
+            for seed in seeds
+        }
+        limit = max(0, MAX_TOTAL_CANDIDATES - len(seeds)) if max_injected is None else max_injected
         try:
             for seed_index, seed in enumerate(seeds[:MAX_GRAPH_SEEDS]):
                 seed_id = str(seed.get("chunk_id") or "")
@@ -69,11 +76,18 @@ class GraphCandidateExpansionService:
                     chunk = related_item.chunk
                     relation = related_item.relation
                     chunk_id = str(chunk.id)
-                    if chunk_id in existing_ids or chunk_id in {
-                        item["chunk_id"] for item in result.candidates
-                    }:
+                    identity = (kb_id, chunk_id)
+                    if identity in existing_ids:
                         continue
-                    if len(result.candidates) + len(seeds) >= MAX_TOTAL_CANDIDATES:
+                    if max_injected is not None:
+                        normalized = normalize_content(chunk.content)
+                        if (
+                            (kb_id, normalized) in seen_content
+                            or (chunk.chunk_metadata or {}).get("chunk_type") == "reference_pointer"
+                            or is_low_information_content(chunk.content)
+                        ):
+                            continue
+                    if len(result.candidates) >= limit:
                         break
                     if added_for_seed >= MAX_INJECTED_CHUNKS_PER_SEED:
                         break
@@ -90,11 +104,13 @@ class GraphCandidateExpansionService:
                     item["_graph_anchor_id"] = seed_id
                     item["_graph_relation_rank"] = RELATION_PRIORITY[relation]
                     result.candidates.append(item)
+                    existing_ids.add(identity)
+                    seen_content.add((kb_id, normalize_content(chunk.content)))
                     result.sources.setdefault(seed_id, []).append(
                         {"chunk_id": chunk_id, "relation": relation}
                     )
                     added_for_seed += 1
-                if len(result.candidates) + len(seeds) >= MAX_TOTAL_CANDIDATES:
+                if len(result.candidates) >= limit:
                     break
         except Exception as exc:
             result.degraded = True

@@ -83,7 +83,14 @@ async def test_elasticsearch_provider_indexes_without_embedding_and_searches_wit
     query = client.search.await_args.kwargs["query"]
     assert query["bool"]["filter"] == [
         {"term": {"tenant_id": "tenant-test"}},
-        {"term": {"kb_id": "kb-test"}},
     ]
-    assert query["bool"]["must"]["multi_match"]["fields"] == ["title^2", "content"]
+    assert query["bool"]["should"][0]["bool"]["filter"] == [
+        {"term": {"kb_id": "kb-test"}},
+        {"term": {"index_version": "v1"}},
+    ]
+    assert query["bool"]["minimum_should_match"] == 1
+    assert query["bool"]["should"][0]["bool"]["must"]["multi_match"]["fields"] == [
+        "title^2",
+        "content",
+    ]
     assert results[0]["bm25_score"] == 12.4

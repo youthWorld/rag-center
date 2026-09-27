@@ -22,8 +22,7 @@
     "retrieval_options": {
       "mode": "hybrid",
       "vector_top_k": 20,
-      "bm25_top_k": 20,
-      "rrf_k": 10
+      "bm25_top_k": 20
     },
     "rerank_options": {
       "enabled": true,
@@ -47,8 +46,7 @@
     "retrieval_options": {
       "mode": "hybrid",
       "vector_top_k": 20,
-      "bm25_top_k": 20,
-      "rrf_k": 10
+      "bm25_top_k": 20
     },
     "rerank_options": {
       "enabled": true,

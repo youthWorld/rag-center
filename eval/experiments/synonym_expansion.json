@@ -20,8 +20,7 @@
     "retrieval_options": {
       "mode": "vector",
       "vector_top_k": 10,
-      "bm25_top_k": 10,
-      "rrf_k": 60
+      "bm25_top_k": 10
     },
     "rerank_options": {
       "enabled": false,
@@ -40,8 +39,7 @@
     "retrieval_options": {
       "mode": "vector",
       "vector_top_k": 10,
-      "bm25_top_k": 10,
-      "rrf_k": 60
+      "bm25_top_k": 10
     },
     "rerank_options": {
       "enabled": false,

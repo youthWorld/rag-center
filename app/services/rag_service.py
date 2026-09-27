@@ -2,7 +2,7 @@ import asyncio
 import re
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -42,8 +42,12 @@ from app.services.evidence_orchestration_service import (
 )
 from app.services.graph_candidate_expansion_service import GraphCandidateExpansionService
 from app.services.hybrid_search_service import HybridSearchService
-from app.services.multi_kb_fusion_service import MultiKBFusionService
 from app.services.rate_limit_service import RateLimitService
+from app.services.retrieval_usage import (
+    record_request,
+    record_retrieval_model_call,
+    retrieval_requests,
+)
 from app.tenant.plan_resolver import PlanContext, PlanResolver
 from app.tenant.retrieve_presets import expand_retrieve_profile
 from app.utils.id_generator import generate_id
@@ -58,6 +62,7 @@ class _RetrievalCandidates:
     fused_count: int
     degraded: bool = False
     degraded_reason: str | None = None
+    metrics: dict[str, Any] = field(default_factory=dict)
 
 
 class RagService:
@@ -90,7 +95,6 @@ class RagService:
         self.hybrid_search_service = hybrid_search_service or HybridSearchService(
             rrf_k=settings.hybrid_rrf_k
         )
-        self.multi_kb_fusion_service = MultiKBFusionService(rrf_k=settings.hybrid_rrf_k)
         self.rerank_provider = rerank_provider or NoopRerankProvider()
         self.query_pipeline = query_pipeline or QueryPipeline(
             rewrite_enabled=settings.query_rewrite_enabled
@@ -125,13 +129,7 @@ class RagService:
             request.user_id,
         )
         plan = plan_context or await self._resolve_plan_context(tenant_id, tenant=tenant)
-        profile = request.profile
-        if profile is None:
-            profile = (
-                "balanced"
-                if plan_context is not None or tenant is not None or self._policy_is_configured()
-                else "custom"
-            )
+        profile = request.profile or "balanced"
         self._enforce_multi_kb_limit(plan, profile=profile, kb_ids=kb_ids)
         if profile not in plan.features.allowed_profiles:
             self._raise_feature_not_allowed(
@@ -202,376 +200,24 @@ class RagService:
         if self.rate_limit_service is not None and not internal_retrieve_once:
             await self.rate_limit_service.check_retrieve(tenant_id, plan)
 
-        if len(kb_ids) > 1:
-            return await self._retrieve_multi_kb(
-                request,
-                kb_ids=kb_ids,
-                tenant_id=tenant_id,
-                plan=plan,
-                profile=profile,
-                effective_request=effective_request,
-                mode=mode,
-                rerank_enabled=rerank_enabled,
-                query_rewrite_enabled=query_rewrite_enabled,
-                evidence_options=evidence_options,
-                observability=observability,
-                internal_retrieve_once=internal_retrieve_once,
-                frozen_index_versions=frozen_index_versions,
-                log_id=log_id,
-            )
-
-        knowledge_base = await self.knowledge_base_repository.get_by_id(
-            kb_id=kb_ids[0],
+        return await self._retrieve_scope(
+            request,
+            kb_ids=list(dict.fromkeys(kb_ids)),
             tenant_id=tenant_id,
-        )
-        if knowledge_base is None:
-            raise KnowledgeBaseNotFoundError()
-        if frozen_index_versions is not None:
-            index_version = frozen_index_versions.get(str(knowledge_base.id), "")
-            if not index_version:
-                raise ServiceConfigurationError(
-                    internal_message="frozen index version is missing",
-                    context={"kb_id": str(knowledge_base.id)},
-                )
-        else:
-            index_version = await self._resolve_index_version(
-                request.index_version,
-                knowledge_base=knowledge_base,
-                tenant_id=tenant_id,
-            )
-
-        query_processing = await self.query_pipeline.process(
-            request.query,
-            knowledge_base=knowledge_base,
-            query_options=effective_request.query_options,
-        )
-        search_query = query_processing.search_query
-        observability.record_query_processing(
-            effective_query=query_processing.effective_query,
-            search_query=search_query,
-            rewrite_latency_ms=query_processing.rewrite_latency_ms,
-            synonym_applied=query_processing.synonym_applied,
-            synonym_expansions=query_processing.synonym_expansions,
-            degraded=query_processing.degraded,
-            degraded_reason=query_processing.degraded_reason,
-        )
-        started_at = time.perf_counter()
-        vector_top_k, bm25_top_k, top_k, rrf_k = self._resolve_retrieval_options(
-            effective_request,
-            mode,
-        )
-        if mode == "hybrid":
-            self.logger.info(
-                "HYBRID_SEARCH_START | tenant_id=%s | kb_id=%s | query=%s | "
-                "vector_top_k=%s | bm25_top_k=%s",
-                tenant_id,
-                knowledge_base.id,
-                search_query,
-                vector_top_k,
-                bm25_top_k,
-            )
-
-        keyword_search_provider: KeywordSearchProvider | None = None
-        if mode in {"bm25", "hybrid"}:
-            keyword_search_provider = self._get_keyword_search_provider()
-            if keyword_search_provider is None:
-                raise ServiceConfigurationError(
-                    internal_message="keyword search provider is not configured",
-                    context={"mode": mode},
-                )
-
-        query_vector: list[float] | None = None
-        vector_error: Exception | None = None
-        if mode in {"vector", "hybrid"}:
-            try:
-                query_vector = await self.embedding_provider.embed_query(search_query)
-            except Exception as exception:
-                vector_error = exception
-                self.logger.exception(
-                    "VECTOR_QUERY_EMBEDDING_FAILED | tenant_id=%s | kb_id=%s | query=%s | error=%s",
-                    tenant_id,
-                    knowledge_base.id,
-                    search_query,
-                    str(exception) or type(exception).__name__,
-                )
-
-        candidate = await self._retrieve_candidates(
-            tenant_id=tenant_id,
-            knowledge_base=knowledge_base,
-            search_query=search_query,
-            query_vector=query_vector,
-            vector_error=vector_error,
+            plan=plan,
+            profile=profile,
+            effective_request=effective_request,
             mode=mode,
-            vector_top_k=vector_top_k,
-            bm25_top_k=bm25_top_k,
-            rrf_k=rrf_k,
-            keyword_search_provider=keyword_search_provider,
-            index_version=index_version,
-        )
-        filtered_candidates, filter_metadata = (
-            self._filter_candidates(candidate.chunks)
-            if index_version != "v1"
-            else (candidate.chunks, {})
-        )
-        filtered_candidates = filtered_candidates[: max(top_k, 20)]
-        base_candidate_snapshot = [
-            dict(item) for item in self._tag_kb_chunks(filtered_candidates, knowledge_base)
-        ]
-        graph_result = await self.graph_candidate_expansion_service.expand_candidates(
-            tenant_id=tenant_id,
-            kb_ids=[knowledge_base.id],
-            seeds=base_candidate_snapshot,
-            index_version=index_version,
-        )
-        graph_candidates = self._merge_graph_candidates(
-            base_candidate_snapshot,
-            self._tag_kb_chunks(graph_result.candidates, knowledge_base),
-        )
-        retrieved = graph_candidates[: max(top_k, 30)]
-        vector_count = candidate.vector_count
-        bm25_count = candidate.bm25_count
-        fused_count = candidate.fused_count
-        retrieval_degraded = candidate.degraded
-        degraded_reason = candidate.degraded_reason
-        empty_reason = (
-            await self._resolve_empty_reason(
-                kb_ids=[knowledge_base.id],
-                tenant_id=tenant_id,
-            )
-            if not retrieved
-            else None
-        )
-        retrieval_metadata = self._build_retrieval_metadata(
-            mode=mode,
-            rrf_k=rrf_k,
-            vector_top_k=vector_top_k,
-            bm25_top_k=bm25_top_k,
-            vector_count=vector_count,
-            bm25_count=bm25_count,
-            fused_count=fused_count,
-            degraded=retrieval_degraded,
-            degraded_reason=degraded_reason,
-            empty_reason=empty_reason,
-        )
-        if index_version != "v1":
-            retrieval_metadata.update(filter_metadata)
-            retrieval_metadata.update(
-                {
-                    "index_version": index_version,
-                    "graph_injection_executed": True,
-                    "graph_injected_count": graph_result.injected_count,
-                    "graph_injection_latency_ms": graph_result.latency_ms,
-                }
-            )
-        observability.record_retrieval(
-            search_query=search_query,
-            mode=mode,
-            vector_count=vector_count,
-            bm25_count=bm25_count,
-            fused_count=fused_count,
-            degraded=retrieval_degraded,
-            degraded_reason=degraded_reason,
-            empty_reason=empty_reason,
+            rerank_enabled=rerank_enabled,
+            query_rewrite_enabled=query_rewrite_enabled,
+            evidence_options=evidence_options,
+            observability=observability,
+            internal_retrieve_once=internal_retrieve_once,
+            frozen_index_versions=frozen_index_versions,
+            log_id=log_id,
         )
 
-        rerank_top_n = self._resolve_rerank_top_n(effective_request)
-        candidate_count = 0
-        rerank_degraded = False
-        rerank_error: str | None = None
-        reranked = retrieved
-        rerank_started = time.perf_counter()
-        if rerank_enabled and retrieved:
-            rerank_candidates = retrieved[:50]
-            candidate_count = len(rerank_candidates)
-            try:
-                reranked = await self.rerank_provider.rerank(
-                    query=effective_request.query,
-                    chunks=rerank_candidates,
-                    top_n=rerank_top_n,
-                )
-            except Exception as exception:
-                rerank_degraded = True
-                rerank_error = self._safe_rerank_error(exception)
-                reranked = [{**item, "rerank_score": None} for item in rerank_candidates]
-                self.logger.warning(
-                    "BUSINESS_EVENT | event=rag_rerank_degraded | kb_id=%s | "
-                    "candidate_count=%s | error=%s",
-                    knowledge_base.id,
-                    candidate_count,
-                    rerank_error,
-                )
-
-        rerank_latency_ms = (
-            int((time.perf_counter() - rerank_started) * 1000) if candidate_count else 0
-        )
-        rerank_model_calls = int(
-            rerank_enabled
-            and candidate_count > 0
-            and not isinstance(self.rerank_provider, NoopRerankProvider)
-        )
-        application_model_call_details = {
-            "query_rewrite": query_processing.application_model_calls,
-            "rerank": rerank_model_calls,
-        }
-        observability.record_rerank(
-            enabled=rerank_enabled,
-            candidate_count=candidate_count,
-            degraded=rerank_degraded,
-            error=rerank_error,
-        )
-
-        graph_selected_count = 0
-        if rerank_enabled:
-            response_chunks = reranked[:rerank_top_n]
-            graph_selected_count = sum(
-                item.get("retrieval_source") == "graph" for item in response_chunks
-            )
-        else:
-            response_chunks, graph_selected_count = self._select_without_rerank(
-                seeds=base_candidate_snapshot,
-                injected=self._tag_kb_chunks(graph_result.candidates, knowledge_base),
-                top_k=top_k,
-            )
-        retrieval_metadata["graph_selected_count"] = graph_selected_count
-        context_result = await self.context_expansion_service.expand(
-            tenant_id=tenant_id,
-            kb_ids=[knowledge_base.id],
-            anchors=response_chunks,
-            index_version=index_version,
-        )
-        response_chunks = context_result.anchors
-        latency_ms = int((time.perf_counter() - started_at) * 1000)
-        retrieved_chunks = [
-            RetrievedChunk(
-                document_id=item["document_id"],
-                chunk_id=item["chunk_id"],
-                kb_id=knowledge_base.id,
-                kb_name=(
-                    str(knowledge_base.name)
-                    if getattr(knowledge_base, "name", None) is not None
-                    else None
-                ),
-                title=item["title"],
-                content=item["content"],
-                score=float(item["score"]),
-                vector_score=self._optional_float(item.get("vector_score")),
-                bm25_score=self._optional_float(item.get("bm25_score")),
-                vector_rank=item.get("vector_rank"),
-                bm25_rank=item.get("bm25_rank"),
-                retrieval_source=item.get("retrieval_source", "vector"),
-                rerank_score=(
-                    float(item["rerank_score"]) if item.get("rerank_score") is not None else None
-                ),
-                index_version=item.get("index_version") or index_version,
-                section_id=item.get("section_id"),
-                parent_section_id=item.get("parent_section_id"),
-                order_index=item.get("order_index"),
-                context=item.get("context"),
-                metadata=dict(item.get("metadata") or {}),
-            )
-            for item in response_chunks
-        ]
-        evidence_result = await self._orchestrate_evidence(
-            query=request.query,
-            tenant_id=tenant_id,
-            kb_ids=[knowledge_base.id],
-            index_versions={knowledge_base.id: index_version},
-            candidates=base_candidate_snapshot,
-            retrieved_chunks=response_chunks,
-            options=evidence_options,
-        )
-        evidence_metadata = evidence_result.metadata.model_dump(mode="json")
-        if evidence_result.metadata.enabled:
-            application_model_call_details["evidence"] = int(evidence_result.metadata.executed)
-        serialized_chunks = [chunk.model_dump() for chunk in retrieved_chunks]
-        resolved_log_id = log_id or generate_id()
-        if not internal_retrieve_once:
-            observability.finish(log_id=resolved_log_id, chunks=serialized_chunks)
-            if self.rate_limit_service is not None:
-                await self.rate_limit_service.record_retrieve_success(tenant_id)
-        self.logger.info(
-            "BUSINESS_EVENT | event=rag_retrieval_completed | tenant_id=%s | "
-            "kb_id=%s | query=%s | vector_top_k=%s | bm25_top_k=%s | "
-            "vector_count=%s | bm25_count=%s | fused_count=%s | chunk_count=%s | "
-            "latency_ms=%s | cost_ms=%s",
-            tenant_id,
-            knowledge_base.id,
-            search_query,
-            vector_top_k,
-            bm25_top_k,
-            vector_count,
-            bm25_count,
-            fused_count,
-            len(retrieved_chunks),
-            latency_ms,
-            latency_ms,
-        )
-
-        return RagRetrieveResponse(
-            query=request.query,
-            kb_id=knowledge_base.id,
-            kb_ids=[knowledge_base.id],
-            retrieved_chunks=retrieved_chunks,
-            evidence_pack=evidence_result.pack,
-            metadata={
-                "log_id": resolved_log_id,
-                "trace_id": observability.trace_id,
-                "top_k": top_k,
-                "latency_ms": latency_ms,
-                "vector_store": self.settings.vector_store,
-                "query_processing": (
-                    query_processing.to_dict() if query_processing.should_expose() else None
-                ),
-                "retrieval": retrieval_metadata,
-                "index_version": index_version,
-                "graph_injection": {
-                    "executed": index_version != "v1",
-                    "graph_injected_count": graph_result.injected_count,
-                    "graph_selected_count": graph_selected_count,
-                    "latency_ms": graph_result.latency_ms,
-                    "degraded": graph_result.degraded,
-                    "error": graph_result.error,
-                    "sources": graph_result.sources,
-                },
-                "context_expansion": {
-                    "executed": index_version != "v1",
-                    "anchor_count": len(response_chunks),
-                    "expanded_anchor_count": context_result.expanded_anchor_count,
-                    "supplemental_chunk_count": context_result.supplemental_chunk_count,
-                    "deduplicated_count": context_result.deduplicated_count,
-                    "latency_ms": context_result.latency_ms,
-                    "degraded": context_result.degraded,
-                    "error": context_result.error,
-                },
-                "evidence": evidence_metadata,
-                "rerank": self._build_rerank_metadata(
-                    enabled=rerank_enabled,
-                    top_n=rerank_top_n,
-                    candidate_count=candidate_count,
-                    returned_count=len(response_chunks),
-                    latency_ms=rerank_latency_ms,
-                    degraded=rerank_degraded,
-                    error=rerank_error,
-                ),
-                "tenant_policy": {
-                    "plan": plan.plan,
-                    "retrieve_profile": profile,
-                    "effective_mode": mode,
-                    "effective_rerank": rerank_enabled,
-                    "effective_query_rewrite": query_rewrite_enabled,
-                    "effective_evidence": bool(evidence_options.enabled),
-                },
-                "application_model_calls": sum(application_model_call_details.values()),
-                "application_model_call_details": application_model_call_details,
-                **(
-                    {"_candidate_snapshot": base_candidate_snapshot}
-                    if internal_retrieve_once
-                    else {}
-                ),
-            },
-        )
-
-    async def _retrieve_multi_kb(
+    async def _retrieve_scope(
         self,
         request: RagRetrieveRequest,
         *,
@@ -595,8 +241,7 @@ class RagService:
         )
         if frozen_index_versions is not None:
             versions = {
-                str(kb.id): frozen_index_versions.get(str(kb.id), "")
-                for kb in knowledge_bases
+                str(kb.id): frozen_index_versions.get(str(kb.id), "") for kb in knowledge_bases
             }
             missing = [kb_id for kb_id, version in versions.items() if not version]
             if missing:
@@ -613,7 +258,7 @@ class RagService:
             }
         query_processing = await self.query_pipeline.process(
             request.query,
-            knowledge_base=knowledge_bases[0],
+            knowledge_base=min(knowledge_bases, key=lambda kb: str(kb.id)),
             query_options=effective_request.query_options,
         )
         search_query = query_processing.search_query
@@ -632,147 +277,44 @@ class RagService:
             effective_request,
             mode,
         )
-        per_kb_top_k = self._resolve_multi_kb_top_k(
-            top_k=top_k,
+        keyword_search_provider = (
+            self._get_keyword_search_provider() if mode in {"bm25", "hybrid"} else None
+        )
+        candidate = await self._retrieve_candidates(
+            tenant_id=tenant_id,
+            index_versions=versions,
+            search_query=search_query,
+            mode=mode,
             vector_top_k=vector_top_k,
             bm25_top_k=bm25_top_k,
-        )
-        per_kb_vector_top_k = per_kb_top_k if mode in {"vector", "hybrid"} else 0
-        per_kb_bm25_top_k = per_kb_top_k if mode in {"bm25", "hybrid"} else 0
-
-        keyword_search_provider: KeywordSearchProvider | None = None
-        if mode in {"bm25", "hybrid"}:
-            keyword_search_provider = self._get_keyword_search_provider()
-            if keyword_search_provider is None:
-                raise ServiceConfigurationError(
-                    internal_message="keyword search provider is not configured",
-                    context={"mode": mode},
-                )
-
-        query_vector: list[float] | None = None
-        vector_error: Exception | None = None
-        if mode in {"vector", "hybrid"}:
-            try:
-                query_vector = await self.embedding_provider.embed_query(search_query)
-            except Exception as exception:
-                vector_error = exception
-                self.logger.exception(
-                    "VECTOR_QUERY_EMBEDDING_FAILED | tenant_id=%s | kb_ids=%s | query=%s | "
-                    "error=%s",
-                    tenant_id,
-                    kb_ids,
-                    search_query,
-                    str(exception) or type(exception).__name__,
-                )
-
-        candidates = await asyncio.gather(
-            *(
-                self._retrieve_candidates(
-                    tenant_id=tenant_id,
-                    knowledge_base=knowledge_base,
-                    search_query=search_query,
-                    query_vector=query_vector,
-                    vector_error=vector_error,
-                    mode=mode,
-                    vector_top_k=per_kb_vector_top_k,
-                    bm25_top_k=per_kb_bm25_top_k,
-                    rrf_k=rrf_k,
-                    keyword_search_provider=keyword_search_provider,
-                    index_version=versions[str(knowledge_base.id)],
-                )
-                for knowledge_base in knowledge_bases
-            ),
-            return_exceptions=True,
-        )
-
-        per_kb_chunks: dict[str, list[dict[str, Any]]] = {}
-        failed_kb_ids: list[str] = []
-        per_kb_metadata: dict[str, dict[str, Any]] = {}
-        vector_count = 0
-        bm25_count = 0
-        degraded = False
-        degraded_reason: str | None = None
-        for knowledge_base, result in zip(knowledge_bases, candidates, strict=True):
-            kb_id = str(knowledge_base.id)
-            if not isinstance(result, _RetrievalCandidates):
-                exception = (
-                    result
-                    if isinstance(result, BaseException)
-                    else RuntimeError("unexpected retrieval result")
-                )
-                failed_kb_ids.append(kb_id)
-                per_kb_metadata[kb_id] = {
-                    "error": str(exception) or type(exception).__name__,
-                    "error_type": type(exception).__name__,
-                }
-                self.logger.error(
-                    "RETRIEVAL_KB_FAILED | tenant_id=%s | kb_id=%s | query=%s | "
-                    "error_type=%s | error=%s",
-                    tenant_id,
-                    kb_id,
-                    search_query,
-                    type(exception).__name__,
-                    str(exception) or type(exception).__name__,
-                )
-                continue
-
-            candidate = result
-            filtered, filter_metadata = (
-                self._filter_candidates(candidate.chunks)
-                if versions[kb_id] != "v1"
-                else (candidate.chunks, {})
-            )
-            per_kb_chunks[kb_id] = self._tag_kb_chunks(
-                [
-                    {**chunk, "index_version": chunk.get("index_version") or versions[kb_id]}
-                    for chunk in filtered[: max(top_k, per_kb_top_k)]
-                ],
-                knowledge_base,
-            )
-            per_kb_metadata[kb_id] = {
-                "index_version": versions[kb_id],
-                **(filter_metadata if versions[kb_id] != "v1" else {}),
-            }
-            vector_count += candidate.vector_count
-            bm25_count += candidate.bm25_count
-            if candidate.degraded and not degraded:
-                degraded = True
-                degraded_reason = candidate.degraded_reason
-
-        if not per_kb_chunks:
-            raise AppError(
-                code=ErrorCode.RETRIEVAL_FAILED,
-                internal_message=(
-                    f"retrieval failed for knowledge bases: {', '.join(failed_kb_ids) or 'unknown'}"
-                ),
-                context={
-                    "kb_ids": kb_ids,
-                    "failed_kb_ids": failed_kb_ids,
-                    "per_kb_metadata": per_kb_metadata,
-                },
-            )
-
-        partial_kb_success = bool(failed_kb_ids)
-        if partial_kb_success:
-            degraded = True
-            degraded_reason = (
-                f"{degraded_reason}; partial knowledge-base retrieval"
-                if degraded_reason
-                else "partial knowledge-base retrieval"
-            )
-
-        direct_retrieved = self.multi_kb_fusion_service.fuse(
-            per_kb_chunks,
             rrf_k=rrf_k,
+            keyword_search_provider=keyword_search_provider,
         )
+        names = {str(kb.id): getattr(kb, "name", None) for kb in knowledge_bases}
+        raw = [{**item, "kb_name": names[item["kb_id"]]} for item in candidate.chunks]
+        direct_retrieved, filter_metadata = self._filter_scope_candidates(raw)
         base_candidate_snapshot = [dict(item) for item in direct_retrieved]
-        fused_count = len(direct_retrieved)
+        if len(versions) == 1:
+            base_candidate_snapshot = base_candidate_snapshot[: max(top_k, 20)]
+        vector_count, bm25_count = candidate.vector_count, candidate.bm25_count
+        fused_count = candidate.fused_count
+        degraded, degraded_reason = candidate.degraded, candidate.degraded_reason
+        base_input = direct_retrieved[: 20 if profile == "quality" else max(top_k, 20)]
         graph_result = await self.graph_candidate_expansion_service.expand_candidates(
-            tenant_id=tenant_id, kb_ids=kb_ids, seeds=direct_retrieved[:20]
+            tenant_id=tenant_id,
+            kb_ids=kb_ids,
+            seeds=base_input,
+            max_injected=None if internal_retrieve_once else 10,
         )
-        retrieved = self._merge_graph_candidates(
-            direct_retrieved[: max(top_k, 20)], graph_result.candidates
-        )[: max(top_k, 30)]
+        self._validate_scope(graph_result.candidates, tenant_id, versions)
+        if not internal_retrieve_once:
+            graph_result.candidates = self._filter_scope_candidates(
+                self._merge_graph_candidates(base_candidate_snapshot, graph_result.candidates)
+            )[0][len(base_candidate_snapshot) :][:10]
+            graph_result.injected_count = len(graph_result.candidates)
+        retrieved = self._merge_graph_candidates(base_input, graph_result.candidates)
+        if profile != "quality":
+            retrieved = retrieved[: max(top_k, 30)]
         empty_reason = (
             await self._resolve_empty_reason(
                 kb_ids=kb_ids,
@@ -784,23 +326,26 @@ class RagService:
         retrieval_metadata = self._build_retrieval_metadata(
             mode=mode,
             rrf_k=rrf_k,
-            vector_top_k=per_kb_vector_top_k,
-            bm25_top_k=per_kb_bm25_top_k,
+            vector_top_k=vector_top_k,
+            bm25_top_k=bm25_top_k,
             vector_count=vector_count,
             bm25_count=bm25_count,
             fused_count=fused_count,
             degraded=degraded,
             degraded_reason=degraded_reason,
-            failed_kb_ids=failed_kb_ids or None,
-            partial_kb_success=partial_kb_success,
-            per_kb_metadata=per_kb_metadata or None,
             empty_reason=empty_reason,
-            multi_kb=True,
+            multi_kb=len(versions) > 1,
             kb_count=len(kb_ids),
-            per_kb_top_k=per_kb_top_k,
         )
+        retrieval_metadata.update(candidate.metrics)
+        retrieval_metadata.update(filter_metadata)
         retrieval_metadata.update(
             {
+                "kb_ids": sorted(versions),
+                "kb_count": len(versions),
+                "fusion_scope": "global",
+                "base_candidate_count": len(base_input),
+                "rerank_input_count": len(retrieved) if rerank_enabled else 0,
                 "index_versions": versions,
                 "graph_injected_count": graph_result.injected_count,
                 "graph_injection_latency_ms": graph_result.latency_ms,
@@ -814,13 +359,10 @@ class RagService:
             fused_count=fused_count,
             degraded=degraded,
             degraded_reason=degraded_reason,
-            failed_kb_ids=failed_kb_ids or None,
-            partial_kb_success=partial_kb_success,
-            per_kb_metadata=per_kb_metadata or None,
             empty_reason=empty_reason,
         )
 
-        rerank_top_n = self._resolve_rerank_top_n(effective_request)
+        rerank_top_n = min(self._resolve_rerank_top_n(effective_request), top_k, len(retrieved))
         candidate_count = 0
         rerank_degraded = False
         rerank_error: str | None = None
@@ -830,15 +372,20 @@ class RagService:
             rerank_candidates = retrieved[:50]
             candidate_count = len(rerank_candidates)
             try:
+                if not isinstance(self.rerank_provider, NoopRerankProvider):
+                    record_retrieval_model_call("rerank")
                 reranked = await self.rerank_provider.rerank(
-                    query=effective_request.query,
+                    query=search_query,
                     chunks=rerank_candidates,
                     top_n=rerank_top_n,
                 )
             except Exception as exception:
                 rerank_degraded = True
                 rerank_error = self._safe_rerank_error(exception)
-                reranked = [{**item, "rerank_score": None} for item in rerank_candidates]
+                reranked = [
+                    {**item, "rerank_score": None}
+                    for item in (base_input if profile == "quality" else rerank_candidates)
+                ]
                 self.logger.warning(
                     "BUSINESS_EVENT | event=rag_rerank_degraded | kb_ids=%s | "
                     "candidate_count=%s | error=%s",
@@ -856,6 +403,7 @@ class RagService:
             and not isinstance(self.rerank_provider, NoopRerankProvider)
         )
         application_model_call_details = {
+            "embedding": candidate.metrics["embedding_request_count"],
             "query_rewrite": query_processing.application_model_calls,
             "rerank": rerank_model_calls,
         }
@@ -883,6 +431,10 @@ class RagService:
             tenant_id=tenant_id, kb_ids=kb_ids, anchors=response_chunks
         )
         response_chunks = context_result.anchors
+        self._validate_scope(response_chunks, tenant_id, versions)
+        retrieval_metadata["source_distribution"] = {
+            kb: sum(item["kb_id"] == kb for item in response_chunks) for kb in sorted(versions)
+        }
         latency_ms = int((time.perf_counter() - started_at) * 1000)
         retrieved_chunks = [
             RetrievedChunk(
@@ -925,7 +477,11 @@ class RagService:
         serialized_chunks = [chunk.model_dump() for chunk in retrieved_chunks]
         resolved_log_id = log_id or generate_id()
         if not internal_retrieve_once:
-            observability.finish(log_id=resolved_log_id, chunks=serialized_chunks)
+            observability.finish(
+                log_id=resolved_log_id,
+                chunks=serialized_chunks,
+                model_calls=application_model_call_details,
+            )
             if self.rate_limit_service is not None:
                 await self.rate_limit_service.record_retrieve_success(tenant_id)
         self.logger.info(
@@ -936,8 +492,8 @@ class RagService:
             tenant_id,
             kb_ids,
             search_query,
-            per_kb_vector_top_k,
-            per_kb_bm25_top_k,
+            vector_top_k,
+            bm25_top_k,
             vector_count,
             bm25_count,
             fused_count,
@@ -946,7 +502,7 @@ class RagService:
             latency_ms,
         )
 
-        return RagRetrieveResponse(
+        response = RagRetrieveResponse(
             query=request.query,
             kb_id=kb_ids[0],
             kb_ids=kb_ids,
@@ -963,6 +519,7 @@ class RagService:
                 ),
                 "retrieval": retrieval_metadata,
                 "index_versions": versions,
+                **({"index_version": next(iter(versions.values()))} if len(versions) == 1 else {}),
                 "graph_injection": {
                     "executed": any(v != "v1" for v in versions.values()),
                     "graph_injected_count": graph_result.injected_count,
@@ -1002,260 +559,182 @@ class RagService:
                 },
                 "application_model_calls": sum(application_model_call_details.values()),
                 "application_model_call_details": application_model_call_details,
-                **(
-                    {"_candidate_snapshot": base_candidate_snapshot}
-                    if internal_retrieve_once
-                    else {}
-                ),
             },
         )
+        if internal_retrieve_once:
+            response._candidate_snapshot = base_candidate_snapshot
+        return response
 
     async def _retrieve_candidates(
         self,
         *,
         tenant_id: str,
-        knowledge_base: Any,
+        index_versions: dict[str, str],
         search_query: str,
-        query_vector: list[float] | None,
-        vector_error: Exception | None = None,
         mode: RetrievalMode,
         vector_top_k: int,
         bm25_top_k: int,
         rrf_k: int,
         keyword_search_provider: KeywordSearchProvider | None,
-        index_version: str = "v1",
     ) -> _RetrievalCandidates:
-        vector_results: list[dict[str, Any]] = []
-        bm25_results: list[dict[str, Any]] = []
-        vector_failed = False
-        bm25_failed = False
-        vector_exception: Exception | None = vector_error
-        bm25_exception: Exception | None = None
-        if mode in {"vector", "hybrid"}:
-            vector_started_at = time.perf_counter()
-            if query_vector is None:
-                vector_failed = True
-                vector_exception = vector_exception or RuntimeError("query vector is not available")
-                self.logger.error(
-                    "VECTOR_SEARCH_FAILED | tenant_id=%s | kb_id=%s | query=%s | "
-                    "vector_top_k=%s | cost_ms=%s | error=%s",
-                    tenant_id,
-                    knowledge_base.id,
-                    search_query,
-                    vector_top_k,
-                    int((time.perf_counter() - vector_started_at) * 1000),
-                    str(vector_exception) or type(vector_exception).__name__,
-                )
-            else:
-                try:
-                    try:
-                        vector_results = await self.vector_store.similarity_search(
-                            query_vector,
-                            tenant_id=tenant_id,
-                            kb_id=knowledge_base.id,
-                            top_k=vector_top_k,
-                            index_version=index_version,
-                        )
-                    except TypeError as exception:
-                        if index_version != "v1" or "index_version" not in str(exception):
-                            raise
-                        vector_results = await self.vector_store.similarity_search(
-                            query_vector,
-                            tenant_id=tenant_id,
-                            kb_id=knowledge_base.id,
-                            top_k=vector_top_k,
-                        )
-                except Exception as exception:
-                    vector_failed = True
-                    vector_exception = exception
-                    self.logger.exception(
-                        "VECTOR_SEARCH_FAILED | tenant_id=%s | kb_id=%s | query=%s | "
-                        "vector_top_k=%s | cost_ms=%s | error=%s",
-                        tenant_id,
-                        knowledge_base.id,
-                        search_query,
-                        vector_top_k,
-                        int((time.perf_counter() - vector_started_at) * 1000),
-                        str(exception) or type(exception).__name__,
-                    )
-                else:
-                    self.logger.info(
-                        "VECTOR_SEARCH_SUCCESS | tenant_id=%s | kb_id=%s | query=%s | "
-                        "vector_top_k=%s | vector_count=%s | cost_ms=%s",
-                        tenant_id,
-                        knowledge_base.id,
-                        search_query,
-                        vector_top_k,
-                        len(vector_results),
-                        int((time.perf_counter() - vector_started_at) * 1000),
-                    )
+        if mode in {"bm25", "hybrid"} and keyword_search_provider is None:
+            raise ServiceConfigurationError(internal_message="keyword provider is not configured")
+        metrics = {
+            key: 0
+            for key in (
+                "embedding_request_count",
+                "vector_request_count",
+                "bm25_request_count",
+                "embedding_latency_ms",
+                "vector_store_latency_ms",
+                "vector_latency_ms",
+                "bm25_latency_ms",
+                "hybrid_latency_ms",
+            )
+        }
+        started = time.perf_counter()
 
-            if vector_failed and mode == "vector":
-                error = vector_exception or RuntimeError("vector search failed")
-                raise self._build_retrieval_failed_error(
-                    kb_id=str(knowledge_base.id),
-                    stage="vector search",
-                    exception=error,
-                ) from error
-
-        retrieval_degraded = False
-        degraded_reason: str | None = None
-        if mode in {"bm25", "hybrid"}:
-            if keyword_search_provider is None:
-                raise ServiceConfigurationError(
-                    internal_message="keyword search provider is not configured",
-                    context={"mode": mode},
-                )
-            bm25_started_at = time.perf_counter()
+        async def vector():
+            branch_started = time.perf_counter()
             try:
+                if not getattr(self.embedding_provider, "records_request_attempts", False):
+                    record_request("embedding")
+                embedding_started = time.perf_counter()
                 try:
-                    bm25_results = await keyword_search_provider.keyword_search(
-                        query=search_query,
-                        tenant_id=tenant_id,
-                        kb_id=knowledge_base.id,
-                        top_k=bm25_top_k,
-                        index_version=index_version,
+                    query_vector = await self.embedding_provider.embed_query(search_query)
+                finally:
+                    metrics["embedding_latency_ms"] = int(
+                        (time.perf_counter() - embedding_started) * 1000
                     )
-                except TypeError as exception:
-                    if index_version != "v1" or "index_version" not in str(exception):
-                        raise
-                    bm25_results = await keyword_search_provider.keyword_search(
-                        query=search_query,
+                sql_started = time.perf_counter()
+                if not getattr(self.vector_store, "records_request_attempts", False):
+                    record_request("vector")
+                try:
+                    return await self.vector_store.similarity_search_scope(
+                        query_vector,
                         tenant_id=tenant_id,
-                        kb_id=knowledge_base.id,
-                        top_k=bm25_top_k,
+                        index_versions=index_versions,
+                        top_k=vector_top_k,
                     )
-            except Exception as exception:
-                bm25_failed = True
-                bm25_exception = exception
-                self.logger.exception(
-                    "BM25_SEARCH_FAILED | tenant_id=%s | kb_id=%s | query=%s | "
-                    "vector_top_k=%s | bm25_top_k=%s | vector_count=%s | "
-                    "bm25_count=%s | fused_count=%s | cost_ms=%s | error=%s",
-                    tenant_id,
-                    knowledge_base.id,
-                    search_query,
-                    vector_top_k,
-                    bm25_top_k,
-                    len(vector_results),
-                    0,
-                    0,
-                    int((time.perf_counter() - bm25_started_at) * 1000),
-                    str(exception) or type(exception).__name__,
+                finally:
+                    metrics["vector_store_latency_ms"] = int(
+                        (time.perf_counter() - sql_started) * 1000
+                    )
+            except Exception as exc:
+                return exc
+            finally:
+                metrics["vector_latency_ms"] = int((time.perf_counter() - branch_started) * 1000)
+
+        async def bm25():
+            branch_started = time.perf_counter()
+            try:
+                if not getattr(keyword_search_provider, "records_request_attempts", False):
+                    record_request("bm25")
+                return await keyword_search_provider.keyword_search_scope(
+                    query=search_query,
+                    tenant_id=tenant_id,
+                    index_versions=index_versions,
+                    top_k=bm25_top_k,
                 )
-                if mode == "bm25":
-                    raise self._build_retrieval_failed_error(
-                        kb_id=str(knowledge_base.id),
-                        stage="bm25 search",
-                        exception=exception,
-                    ) from exception
+            except Exception as exc:
+                return exc
+            finally:
+                metrics["bm25_latency_ms"] = int((time.perf_counter() - branch_started) * 1000)
+
+        token = retrieval_requests.set(metrics)
+        try:
+            vector_result, bm25_result = [], []
+            if mode == "hybrid":
+                vector_result, bm25_result = await asyncio.gather(vector(), bm25())
+            elif mode == "vector":
+                vector_result = await vector()
             else:
-                self.logger.info(
-                    "BM25_SEARCH_SUCCESS | tenant_id=%s | kb_id=%s | query=%s | "
-                    "bm25_top_k=%s | bm25_count=%s | cost_ms=%s",
-                    tenant_id,
-                    knowledge_base.id,
-                    search_query,
-                    bm25_top_k,
-                    len(bm25_results),
-                    int((time.perf_counter() - bm25_started_at) * 1000),
-                )
-
-        if mode == "hybrid" and vector_failed and bm25_failed:
-            vector_detail = str(vector_exception) or type(vector_exception).__name__
-            bm25_detail = str(bm25_exception) or type(bm25_exception).__name__
-            error = RuntimeError(
-                f"vector search failed: {vector_detail}; bm25 search failed: {bm25_detail}"
-            )
-            raise self._build_retrieval_failed_error(
-                kb_id=str(knowledge_base.id),
-                stage="hybrid search",
-                exception=error,
-                context={
-                    "vector_error": vector_detail,
-                    "bm25_error": bm25_detail,
-                },
-            ) from error
-
-        if mode == "vector":
-            retrieved = self.hybrid_search_service.normalize_vector_results(vector_results)
-        elif mode == "bm25":
-            retrieved = self.hybrid_search_service.normalize_bm25_results(bm25_results)
-        elif vector_failed:
-            retrieval_degraded = True
-            degraded_reason = "vector search failed"
-            retrieved = self.hybrid_search_service.normalize_bm25_results(bm25_results)
-            self.logger.warning(
-                "HYBRID_SEARCH_DEGRADED | tenant_id=%s | kb_id=%s | query=%s | "
-                "degraded_reason=%s | bm25_count=%s",
-                tenant_id,
-                knowledge_base.id,
-                search_query,
-                degraded_reason,
-                len(bm25_results),
-            )
-        elif bm25_failed:
-            retrieval_degraded = True
-            degraded_reason = "bm25 search failed"
-            retrieved = self.hybrid_search_service.normalize_vector_results(vector_results)
-            self.logger.warning(
-                "HYBRID_SEARCH_DEGRADED | tenant_id=%s | kb_id=%s | query=%s | "
-                "degraded_reason=%s | vector_count=%s",
-                tenant_id,
-                knowledge_base.id,
-                search_query,
-                degraded_reason,
-                len(vector_results),
-            )
+                bm25_result = await bm25()
+        finally:
+            retrieval_requests.reset(token)
+        vector_failed = isinstance(vector_result, Exception)
+        bm25_failed = isinstance(bm25_result, Exception)
+        for result in (vector_result, bm25_result):
+            if isinstance(result, ServiceConfigurationError):
+                raise result
+            if not isinstance(result, Exception):
+                self._validate_scope(result, tenant_id, index_versions)
+        if (
+            (mode == "vector" and vector_failed)
+            or (mode == "bm25" and bm25_failed)
+            or (vector_failed and bm25_failed)
+        ):
+            raise AppError(code=ErrorCode.RETRIEVAL_FAILED, context={"retrieval": metrics})
+        vector_chunks = [] if vector_failed else vector_result
+        bm25_chunks = [] if bm25_failed else bm25_result
+        if mode == "hybrid" and not vector_failed and not bm25_failed:
+            chunks = self.hybrid_search_service.fuse(vector_chunks, bm25_chunks, rrf_k=rrf_k)
+            metrics["fusion"] = "rrf"
+        elif mode == "bm25" or vector_failed:
+            chunks = self.hybrid_search_service.normalize_bm25_results(bm25_chunks)
+            metrics["fusion"] = "none"
         else:
-            fused_started_at = time.perf_counter()
-            retrieved = self.hybrid_search_service.fuse(
-                vector_results,
-                bm25_results,
-                rrf_k=rrf_k,
-            )
-            self.logger.info(
-                "RRF_FUSION_SUCCESS | tenant_id=%s | kb_id=%s | query=%s | "
-                "vector_count=%s | bm25_count=%s | fused_count=%s | cost_ms=%s",
-                tenant_id,
-                knowledge_base.id,
-                search_query,
-                len(vector_results),
-                len(bm25_results),
-                len(retrieved),
-                int((time.perf_counter() - fused_started_at) * 1000),
-            )
-
+            chunks = self.hybrid_search_service.normalize_vector_results(vector_chunks)
+            metrics["fusion"] = "none"
+        if mode == "hybrid":
+            metrics["hybrid_latency_ms"] = int((time.perf_counter() - started) * 1000)
         return _RetrievalCandidates(
-            chunks=retrieved,
-            vector_count=len(vector_results),
-            bm25_count=len(bm25_results),
-            fused_count=len(retrieved),
-            degraded=retrieval_degraded,
-            degraded_reason=degraded_reason,
+            chunks=chunks,
+            vector_count=len(vector_chunks),
+            bm25_count=len(bm25_chunks),
+            fused_count=len(chunks),
+            degraded=vector_failed or bm25_failed,
+            degraded_reason="vector search failed"
+            if vector_failed
+            else "bm25 search failed"
+            if bm25_failed
+            else None,
+            metrics=metrics,
         )
 
     @staticmethod
-    def _build_retrieval_failed_error(
-        *,
-        kb_id: str,
-        stage: str,
-        exception: BaseException,
-        context: dict[str, Any] | None = None,
-    ) -> AppError:
-        detail = str(exception) or type(exception).__name__
-        error_context = {
-            "kb_id": kb_id,
-            "stage": stage,
-            "error_type": type(exception).__name__,
+    def _validate_scope(chunks, tenant_id, versions):
+        for item in chunks:
+            if (
+                not item.get("chunk_id")
+                or not item.get("document_id")
+                or item.get("kb_id") not in versions
+                or item.get("index_version") != versions.get(item.get("kb_id"))
+                or (item.get("tenant_id") is not None and item["tenant_id"] != tenant_id)
+            ):
+                raise AppError(
+                    code=ErrorCode.RETRIEVAL_FAILED,
+                    internal_message="candidate identity or scope cannot be verified",
+                )
+
+    @classmethod
+    def _filter_scope_candidates(cls, chunks):
+        output, reasons, seen_ids, seen_content = [], {}, set(), set()
+        for item in chunks:
+            identity = (item.get("kb_id"), item.get("chunk_id"))
+            content_key = (item.get("kb_id"), normalize_content(str(item.get("content") or "")))
+            reason = None
+            if identity in seen_ids:
+                reason = "duplicate_chunk_id"
+            elif item.get("index_version") != "v1":
+                if (item.get("metadata") or {}).get("chunk_type") == "reference_pointer":
+                    reason = "reference_pointer"
+                elif is_low_information_content(str(item.get("content") or "")):
+                    reason = "low_information"
+                elif content_key in seen_content:
+                    reason = "duplicate_content"
+            if reason:
+                reasons[reason] = reasons.get(reason, 0) + 1
+            else:
+                output.append(item)
+                seen_ids.add(identity)
+                seen_content.add(content_key)
+        return output, {
+            "candidate_count_before_filter": len(chunks),
+            "candidate_count_after_filter": len(output),
+            "filtered_count": len(chunks) - len(output),
+            "filtered_reasons": reasons,
         }
-        if context:
-            error_context.update(context)
-        return AppError(
-            code=ErrorCode.RETRIEVAL_FAILED,
-            internal_message=f"{stage} failed: {detail}",
-            context=error_context,
-        )
 
     async def _load_knowledge_bases(
         self,
@@ -1267,15 +746,10 @@ class RagService:
         if callable(get_by_ids):
             loaded = await get_by_ids(kb_ids=kb_ids, tenant_id=tenant_id)
         else:
-            loaded = await asyncio.gather(
-                *(
-                    self.knowledge_base_repository.get_by_id(
-                        kb_id=kb_id,
-                        tenant_id=tenant_id,
-                    )
-                    for kb_id in kb_ids
-                )
-            )
+            loaded = [
+                await self.knowledge_base_repository.get_by_id(kb_id=kb_id, tenant_id=tenant_id)
+                for kb_id in kb_ids
+            ]
 
         by_id = {
             str(knowledge_base.id): knowledge_base
@@ -1324,10 +798,14 @@ class RagService:
     def _merge_graph_candidates(
         seeds: list[dict[str, Any]], injected: list[dict[str, Any]]
     ) -> list[dict[str, Any]]:
-        existing_ids = {str(item.get("chunk_id")) for item in seeds}
+        existing_ids = {(item.get("kb_id"), str(item.get("chunk_id"))) for item in seeds}
         return [
             *seeds,
-            *[item for item in injected if str(item.get("chunk_id")) not in existing_ids],
+            *[
+                item
+                for item in injected
+                if (item.get("kb_id"), str(item.get("chunk_id"))) not in existing_ids
+            ],
         ]
 
     @staticmethod
@@ -1339,16 +817,17 @@ class RagService:
     ) -> tuple[list[dict[str, Any]], int]:
         if top_k <= 0:
             return [], 0
-        quota = 0 if top_k <= 1 else 1 if top_k < 5 else min(2, top_k // 5)
+        quota = min(10, top_k // 5)
         if quota == 0:
             return seeds[:top_k], 0
-        seed_ids = {str(item.get("chunk_id") or "") for item in seeds}
+        seed_ids = {(item.get("kb_id"), str(item.get("chunk_id") or "")) for item in seeds}
         seen_chunk_ids = set(seed_ids)
         selected_anchor_ids: set[str] = set()
         eligible: list[dict[str, Any]] = []
         for item in sorted(
             injected,
             key=lambda candidate: (
+                int(candidate.get("_graph_anchor_rank", 999999)),
                 int(
                     candidate.get(
                         "_graph_relation_rank",
@@ -1362,9 +841,7 @@ class RagService:
                         ),
                     )
                 ),
-                int(candidate.get("_graph_anchor_rank", 999999)),
-                candidate.get("order_index") is None,
-                int(candidate.get("order_index") or 0),
+                str(candidate.get("kb_id") or ""),
                 str(candidate.get("chunk_id") or ""),
             ),
         ):
@@ -1374,67 +851,17 @@ class RagService:
                 or (item.get("metadata") or {}).get("injection_anchor_id")
                 or ""
             )
-            if not chunk_id or chunk_id in seen_chunk_ids or anchor_id in selected_anchor_ids:
+            identity = (item.get("kb_id"), chunk_id)
+            anchor_identity = (item.get("kb_id"), anchor_id)
+            if not chunk_id or identity in seen_chunk_ids or anchor_identity in selected_anchor_ids:
                 continue
-            seen_chunk_ids.add(chunk_id)
-            selected_anchor_ids.add(anchor_id)
+            seen_chunk_ids.add(identity)
+            selected_anchor_ids.add(anchor_identity)
             eligible.append(item)
             if len(eligible) >= quota:
                 break
         direct_count = max(0, top_k - len(eligible))
         return [*seeds[:direct_count], *eligible], len(eligible)
-
-    @staticmethod
-    def _filter_candidates(
-        chunks: list[dict[str, Any]],
-    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-        filtered: list[dict[str, Any]] = []
-        seen_ids: set[str] = set()
-        seen_content: set[str] = set()
-        reasons: dict[str, int] = {}
-        for chunk in chunks:
-            metadata = chunk.get("metadata") or {}
-            content = str(chunk.get("content") or "")
-            reason: str | None = None
-            chunk_id = str(chunk.get("chunk_id") or chunk.get("id") or "")
-            normalized = normalize_content(content)
-            if metadata.get("chunk_type") == "reference_pointer":
-                reason = "reference_pointer"
-            elif is_low_information_content(content):
-                reason = "low_information"
-            elif chunk_id and chunk_id in seen_ids:
-                reason = "duplicate_chunk_id"
-            elif normalized in seen_content:
-                reason = "duplicate_content"
-            if reason:
-                reasons[reason] = reasons.get(reason, 0) + 1
-                continue
-            if chunk_id:
-                seen_ids.add(chunk_id)
-            seen_content.add(normalized)
-            filtered.append(chunk)
-        return filtered, {
-            "candidate_count_before_filter": len(chunks),
-            "candidate_count_after_filter": len(filtered),
-            "filtered_count": len(chunks) - len(filtered),
-            "filtered_reasons": reasons,
-        }
-
-    @staticmethod
-    def _tag_kb_chunks(
-        chunks: list[dict[str, Any]],
-        knowledge_base: Any,
-    ) -> list[dict[str, Any]]:
-        kb_id = str(knowledge_base.id)
-        kb_name = getattr(knowledge_base, "name", None)
-        return [
-            {
-                **chunk,
-                "kb_id": kb_id,
-                "kb_name": str(kb_name) if kb_name is not None else None,
-            }
-            for chunk in chunks
-        ]
 
     def _validate_query(self, query: str) -> None:
         normalized_query = query.strip()
@@ -1464,9 +891,9 @@ class RagService:
             return "no_chunks_matched"
 
         try:
-            counts = await asyncio.gather(
-                *(count_indexed_chunks(kb_id=kb_id, tenant_id=tenant_id) for kb_id in kb_ids)
-            )
+            counts = [
+                await count_indexed_chunks(kb_id=kb_id, tenant_id=tenant_id) for kb_id in kb_ids
+            ]
         except Exception as exception:
             self.logger.warning(
                 "EMPTY_REASON_RESOLUTION_FAILED | tenant_id=%s | kb_ids=%s | error=%s",
@@ -1479,15 +906,6 @@ class RagService:
         return (
             "no_indexed_chunks" if sum(int(count) for count in counts) == 0 else "no_chunks_matched"
         )
-
-    @staticmethod
-    def _resolve_multi_kb_top_k(
-        *,
-        top_k: int,
-        vector_top_k: int,
-        bm25_top_k: int,
-    ) -> int:
-        return max(top_k, vector_top_k, bm25_top_k, 10)
 
     @staticmethod
     def _resolve_kb_ids(request: RagRetrieveRequest) -> list[str]:
@@ -1557,9 +975,6 @@ class RagService:
                 return await resolve_for_tenant_id(tenant_id)
         return await PlanResolver().resolve_for_tenant_id(tenant_id)
 
-    def _policy_is_configured(self) -> bool:
-        return self.plan_resolver is not None or self.rate_limit_service is not None
-
     @staticmethod
     def _expand_profile(
         request: RagRetrieveRequest,
@@ -1567,40 +982,28 @@ class RagService:
     ) -> RagRetrieveRequest:
         if profile == "custom":
             return request
-        preset = expand_retrieve_profile(profile)
-        updates: dict[str, Any] = {}
-        if "top_k" in preset:
-            updates["top_k"] = preset["top_k"]
-        if "retrieval_options" in preset:
-            requested = (
-                request.retrieval_options.model_dump(exclude_none=True)
-                if request.retrieval_options is not None
-                else {}
-            )
-            updates["retrieval_options"] = RetrievalOptions.model_validate(
-                {**requested, **preset["retrieval_options"]}
-            )
-        if "rerank_options" in preset:
-            from app.schemas.rerank import RerankOptions
+        from app.schemas.rerank import RerankOptions
 
-            requested = (
-                request.rerank_options.model_dump(exclude_none=True)
-                if request.rerank_options is not None
-                else {}
+        preset = expand_retrieve_profile(profile)
+        conflicts = sorted(
+            request.model_fields_set
+            & {"top_k", "retrieval_options", "rerank_options", "query_options"}
+        )
+        if conflicts:
+            raise_app_error(
+                ErrorCode.PARAM_ERROR,
+                "named profiles cannot override advanced parameters",
+                data={"profile": profile, "conflicting_fields": conflicts},
             )
-            updates["rerank_options"] = RerankOptions.model_validate(
-                {**requested, **preset["rerank_options"]}
-            )
-        if "query_options" in preset:
-            requested = (
-                request.query_options.model_dump(exclude_none=True)
-                if request.query_options is not None
-                else {}
-            )
-            updates["query_options"] = QueryOptions.model_validate(
-                {**requested, **preset["query_options"]}
-            )
-        return request.model_copy(update=updates)
+        return request.model_copy(
+            update={
+                "profile": profile,
+                "top_k": preset["top_k"],
+                "retrieval_options": RetrievalOptions.model_validate(preset["retrieval_options"]),
+                "rerank_options": RerankOptions.model_validate(preset["rerank_options"]),
+                "query_options": QueryOptions.model_validate(preset["query_options"]),
+            }
+        )
 
     def _enforce_plan_features(
         self,
@@ -1650,6 +1053,11 @@ class RagService:
                 internal_message=f"unsupported HYBRID_FUSION: {self.settings.hybrid_fusion}",
                 context={"fusion": self.settings.hybrid_fusion},
             )
+        if request.retrieval_options is not None:
+            options = request.retrieval_options
+            illegal = {"vector": "bm25_top_k", "bm25": "vector_top_k"}.get(mode)
+            if illegal and illegal in options.model_fields_set:
+                raise_app_error(ErrorCode.PARAM_ERROR, f"{illegal} is not valid for {mode}")
         return mode
 
     def _get_keyword_search_provider(self) -> KeywordSearchProvider | None:
@@ -1697,11 +1105,7 @@ class RagService:
             bm25_top_k = 0
             top_k = requested_top_k
 
-        rrf_k = (
-            options.rrf_k
-            if options is not None and options.rrf_k is not None
-            else self.settings.hybrid_rrf_k
-        )
+        rrf_k = self.settings.hybrid_rrf_k
         return vector_top_k, bm25_top_k, top_k, rrf_k
 
     def _build_retrieval_metadata(
@@ -1716,13 +1120,9 @@ class RagService:
         fused_count: int,
         degraded: bool,
         degraded_reason: str | None,
-        failed_kb_ids: list[str] | None = None,
-        partial_kb_success: bool = False,
-        per_kb_metadata: dict[str, Any] | None = None,
         empty_reason: str | None = None,
         multi_kb: bool = False,
         kb_count: int | None = None,
-        per_kb_top_k: int | None = None,
     ) -> dict[str, Any]:
         metadata: dict[str, Any] = {
             "mode": mode,
@@ -1743,17 +1143,10 @@ class RagService:
                 {
                     "multi_kb": True,
                     "kb_count": kb_count,
-                    "per_kb_top_k": per_kb_top_k,
                     "fusion": "rrf",
                     "rrf_k": rrf_k,
                 }
             )
-        if failed_kb_ids:
-            metadata["failed_kb_ids"] = failed_kb_ids
-        if partial_kb_success:
-            metadata["partial_kb_success"] = True
-        if per_kb_metadata:
-            metadata["per_kb_metadata"] = per_kb_metadata
         if empty_reason is not None:
             metadata["empty_reason"] = empty_reason
         if degraded:
@@ -1832,7 +1225,8 @@ class RagService:
     def _resolve_rerank_top_n(self, request: RagRetrieveRequest) -> int:
         if request.rerank_options is not None and request.rerank_options.top_n is not None:
             return request.rerank_options.top_n
-        return self.settings.rerank_top_n
+        mode = self._resolve_retrieval_mode(request)
+        return self._resolve_retrieval_options(request, mode)[2]
 
     def _build_rerank_metadata(
         self,

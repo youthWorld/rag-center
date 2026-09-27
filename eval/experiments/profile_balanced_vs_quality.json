@@ -4,7 +4,6 @@
   "title": "balanced 与 quality Profile 对比实验",
   "target": "retrieve_profile",
   "changed_fields": [
-    "top_k",
     "retrieval_options.vector_top_k",
     "retrieval_options.bm25_top_k",
     "rerank_options.enabled",

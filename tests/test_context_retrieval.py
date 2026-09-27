@@ -74,10 +74,10 @@ async def test_graph_injects_only_one_hop_and_keeps_original_seed() -> None:
     target = _chunk("ref", 10, content="明确引用的规则")
     session = SimpleNamespace(
         execute=AsyncMock(
-                side_effect=[
-                    _Result(relations=[(SimpleNamespace(), target)]),
-                    _Result(chunks=[]),
-                ]
+            side_effect=[
+                _Result(relations=[(SimpleNamespace(), target)]),
+                _Result(chunks=[]),
+            ]
         )
     )
     seed = {
@@ -121,10 +121,10 @@ async def test_context_expansion_preserves_anchor_and_budget_and_degrades() -> N
     previous = _chunk("prev", 0, content="前置条件")
     session = SimpleNamespace(
         execute=AsyncMock(
-                side_effect=[
-                    _Result(relations=[(SimpleNamespace(), target)]),
-                    _Result(chunks=[previous]),
-                ]
+            side_effect=[
+                _Result(relations=[(SimpleNamespace(), target)]),
+                _Result(chunks=[previous]),
+            ]
         )
     )
     anchor = {
@@ -170,7 +170,9 @@ def test_filter_drops_reference_pointer_but_keeps_short_evidence() -> None:
             "metadata": {"chunk_type": "reference_pointer"},
         },
     ]
-    filtered, stats = RagService._filter_candidates(chunks)
+    filtered, stats = RagService._filter_scope_candidates(
+        [{**chunk, "kb_id": "kb", "index_version": "v2"} for chunk in chunks]
+    )
     assert [chunk["chunk_id"] for chunk in filtered] == ["a"]
     assert stats["filtered_reasons"] == {"duplicate_content": 1, "reference_pointer": 1}
 
@@ -214,12 +216,10 @@ def test_no_rerank_graph_quota_preserves_seed_order_and_scores() -> None:
     selected, graph_count = RagService._select_without_rerank(
         seeds=seeds, injected=injected, top_k=10
     )
-    assert [item["chunk_id"] for item in selected[:8]] == [
-        f"seed-{index}" for index in range(8)
-    ]
+    assert [item["chunk_id"] for item in selected[:8]] == [f"seed-{index}" for index in range(8)]
     assert [item["chunk_id"] for item in selected[8:]] == [
-        "graph-reference",
         "graph-parent",
+        "graph-reference",
     ]
     assert graph_count == 2
     assert selected[8]["score"] == 0.0
@@ -237,16 +237,12 @@ def test_no_rerank_graph_quota_edges_and_candidate_shortage() -> None:
             "_graph_anchor_id": "seed-0",
         }
     ]
-    one, selected_one = RagService._select_without_rerank(
-        seeds=seeds, injected=injected, top_k=1
-    )
+    one, selected_one = RagService._select_without_rerank(seeds=seeds, injected=injected, top_k=1)
     assert [item["chunk_id"] for item in one] == ["seed-0"]
     assert selected_one == 0
-    four, selected_four = RagService._select_without_rerank(
-        seeds=seeds, injected=injected, top_k=4
-    )
-    assert [item["chunk_id"] for item in four] == ["seed-0", "seed-1", "seed-2", "graph-1"]
-    assert selected_four == 1
+    four, selected_four = RagService._select_without_rerank(seeds=seeds, injected=injected, top_k=4)
+    assert [item["chunk_id"] for item in four] == ["seed-0", "seed-1", "seed-2", "seed-3"]
+    assert selected_four == 0
 
 
 def test_context_natural_order_heading_and_non_prose_neighbor_policy() -> None:

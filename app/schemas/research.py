@@ -143,6 +143,7 @@ class ResearchState(BaseModel):
     candidate_chunk_ids: list[str] = Field(default_factory=list)
     round_count: int = 0
     retrieval_task_count: int = 0
+    retrieval_model_call_details: dict[str, int] = Field(default_factory=dict)
     llm_call_count: int = 0
     input_tokens: int = 0
     output_tokens: int = 0
@@ -198,6 +199,9 @@ class ResearchPlanData(BaseModel):
 
 
 class ResearchMetadata(BaseModel):
+    application_model_calls: int = 0
+    application_model_call_details: dict[str, int] = Field(default_factory=dict)
+    rrf_k: int
     research_id: str
     log_id: str
     trace_id: str | None = None

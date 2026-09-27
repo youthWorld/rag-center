@@ -149,13 +149,14 @@ async def test_llm_logging_covers_request_and_response(caplog) -> None:
 
 @pytest.mark.asyncio
 async def test_validation_errors_use_standard_response_and_request_id() -> None:
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        response = await client.post(
-            "/api/v1/knowledge-bases/create",
-            headers={"X-Request-ID": "request-test"},
-            json={"tenant_id": "tenant-test"},
-        )
+    async with app.router.lifespan_context(app):
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.post(
+                "/api/v1/knowledge-bases/create",
+                headers={"X-Request-ID": "request-test"},
+                json={"tenant_id": "tenant-test"},
+            )
 
     assert response.status_code == 400
     assert response.headers["X-Request-ID"] == "request-test"

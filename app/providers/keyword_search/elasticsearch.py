@@ -6,10 +6,13 @@ from elasticsearch.exceptions import ConflictError
 
 from app.core.config import Settings
 from app.providers.keyword_search.base import KeywordSearchProvider
+from app.services.retrieval_usage import record_request
 
 
 class ElasticsearchKeywordSearchProvider(KeywordSearchProvider):
     """Store chunk text in Elasticsearch and retrieve it with BM25."""
+
+    records_request_attempts = True
 
     INDEX_MAPPING = {
         "properties": {
@@ -48,8 +51,65 @@ class ElasticsearchKeywordSearchProvider(KeywordSearchProvider):
     ) -> None:
         self.settings = settings
         self.index = settings.elasticsearch_index
-        self.client = client or AsyncElasticsearch(settings.elasticsearch_url)
+        self._owns_client = client is None
+        self.client = (
+            client if client is not None else AsyncElasticsearch(settings.elasticsearch_url)
+        )
         self._index_ready = False
+
+    async def keyword_search_scope(
+        self,
+        *,
+        query: str,
+        tenant_id: str,
+        index_versions: dict[str, str],
+        top_k: int = 20,
+    ) -> list[dict[str, Any]]:
+        if top_k < 1 or not index_versions:
+            return []
+        await self._ensure_index()
+        version_clauses = []
+        for kb_id, version in sorted(index_versions.items()):
+            fields = ["retrieval_text", "title^2"] if version != "v1" else ["title^2", "content"]
+            version_clauses.append(
+                {
+                    "bool": {
+                        "filter": [
+                            {"term": {"kb_id": kb_id}},
+                            {"term": {"index_version": version}},
+                        ],
+                        "must": {"multi_match": {"query": query, "fields": fields}},
+                    }
+                }
+            )
+        record_request("bm25")
+        response = await self.client.search(
+            index=self.index,
+            query={
+                "bool": {
+                    "filter": [{"term": {"tenant_id": tenant_id}}],
+                    "should": version_clauses,
+                    "minimum_should_match": 1,
+                }
+            },
+            size=top_k,
+            sort=[{"_score": "desc"}, {"kb_id": "asc"}, {"chunk_id": "asc"}],
+        )
+        body = self._response_body(response)
+        if body.get("timed_out") or (body.get("_shards") or {}).get("failed", 0):
+            raise RuntimeError("incomplete Elasticsearch search")
+        results = []
+        for hit in body.get("hits", {}).get("hits", []):
+            source = dict(hit.get("_source") or {})
+            chunk_id = source.get("chunk_id") or hit.get("_id")
+            results.append(
+                {
+                    **source,
+                    "chunk_id": str(chunk_id) if chunk_id is not None else None,
+                    "bm25_score": float(hit.get("_score") or 0.0),
+                }
+            )
+        return results
 
     async def add_chunks(self, chunks: list[dict[str, Any]]) -> None:
         if not chunks:
@@ -95,52 +155,12 @@ class ElasticsearchKeywordSearchProvider(KeywordSearchProvider):
         top_k: int = 20,
         index_version: str | None = None,
     ) -> list[dict[str, Any]]:
-        if top_k < 1:
-            return []
-
-        await self._ensure_index()
-        filters = [
-            {"term": {"tenant_id": tenant_id}},
-            {"term": {"kb_id": kb_id}},
-        ]
-        if index_version is not None:
-            filters.append({"term": {"index_version": index_version}})
-        fields = ["title^2", "content"]
-        if index_version and index_version != "v1":
-            fields = ["retrieval_text", "title^2"]
-        query_body = {
-            "bool": {
-                "filter": filters,
-                "must": {
-                    "multi_match": {
-                        "query": query,
-                        "fields": fields,
-                    }
-                },
-            }
-        }
-        response = await self.client.search(
-            index=self.index,
-            query=query_body,
-            size=top_k,
+        return await self.keyword_search_scope(
+            query=query,
+            tenant_id=tenant_id,
+            index_versions={kb_id: index_version or "v1"},
+            top_k=top_k,
         )
-        body = self._response_body(response)
-        hits = body.get("hits", {}).get("hits", [])
-        results: list[dict[str, Any]] = []
-        for hit in hits:
-            source = dict(hit.get("_source") or {})
-            chunk_id = source.get("chunk_id") or hit.get("_id")
-            if chunk_id is None:
-                continue
-            bm25_score = float(hit.get("_score") or 0.0)
-            results.append(
-                {
-                    **source,
-                    "chunk_id": str(chunk_id),
-                    "bm25_score": bm25_score,
-                }
-            )
-        return results
 
     async def delete_by_document_id(
         self, document_id: str, *, index_version: str | None = None
@@ -158,7 +178,8 @@ class ElasticsearchKeywordSearchProvider(KeywordSearchProvider):
         )
 
     async def close(self) -> None:
-        await self.client.close()
+        if self._owns_client:
+            await self.client.close()
 
     async def _ensure_index(self) -> None:
         if self._index_ready:

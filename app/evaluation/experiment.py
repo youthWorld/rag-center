@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+from app.core.config import settings
+from app.schemas.rag import RagRetrieveRequest
 from app.tenant.retrieve_presets import expand_retrieve_profile
 
 GROUP_NAMES = ("baseline", "candidate")
@@ -215,12 +217,16 @@ def expand_group(group: dict[str, Any]) -> dict[str, Any]:
         errors.append(f"unsupported group fields: {unknown_fields}")
 
     if profile in NAMED_PROFILES:
-        advanced_fields = sorted(set(request_fields) - {"profile", "index_version"})
+        advanced_fields = sorted(
+            set(request_fields) - {"profile", "index_version", "evidence_options"}
+        )
         if advanced_fields:
             errors.append(
                 f"named profile {profile!r} must not include advanced overrides: {advanced_fields}"
             )
         expanded = {"profile": profile, **expand_retrieve_profile(profile)}
+        if "evidence_options" in request_fields:
+            expanded["evidence_options"] = request_fields["evidence_options"]
         if "index_version" in request_fields:
             expanded["index_version"] = request_fields["index_version"]
     else:
@@ -230,6 +236,17 @@ def expand_group(group: dict[str, Any]) -> dict[str, Any]:
             errors.append(f"custom profile is missing required fields: {missing}")
         expanded = request_fields
 
+    try:
+        RagRetrieveRequest.model_validate(
+            {
+                "kb_id": "validation",
+                "user_id": "validation",
+                "query": "validation",
+                **request_fields,
+            }
+        )
+    except ValueError as exc:
+        errors.append(str(exc))
     _validate_expanded_group(expanded, errors)
     if errors:
         raise ExperimentValidationError(errors)
@@ -256,11 +273,11 @@ def expected_effective_config(group: dict[str, Any]) -> dict[str, Any]:
         "retrieval_mode": mode,
         "vector_top_k": retrieval.get("vector_top_k", 0) if mode != "bm25" else 0,
         "bm25_top_k": retrieval.get("bm25_top_k", 0) if mode != "vector" else 0,
-        "rrf_k": retrieval.get("rrf_k") if mode == "hybrid" else None,
+        "rrf_k": settings.hybrid_rrf_k if mode == "hybrid" else None,
         "rerank_enabled": bool(rerank["enabled"]),
         "rerank_top_n": rerank.get("top_n"),
         "rewrite_enabled": rewrite_enabled,
-        "synonym_enabled": query.get("synonym_enabled", True),
+        "synonym_enabled": query.get("synonym_enabled", False),
         **(
             {"evidence_enabled": bool(evidence.get("enabled"))}
             if "evidence_options" in expanded
@@ -300,7 +317,7 @@ def _validate_expanded_group(group: dict[str, Any], errors: list[str]) -> None:
     else:
         if retrieval.get("mode") not in {"vector", "bm25", "hybrid"}:
             errors.append("retrieval_options.mode must be vector, bm25, or hybrid")
-        for field in ("vector_top_k", "bm25_top_k", "rrf_k"):
+        for field in ("vector_top_k", "bm25_top_k"):
             if field in retrieval:
                 value = retrieval[field]
                 if not isinstance(value, int) or isinstance(value, bool) or value < 1:

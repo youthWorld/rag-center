@@ -57,7 +57,7 @@ const retrievalModes: Array<{ value: RetrievalMode; label: string; description: 
 const retrievalProfiles: Array<{ value: RetrieveProfile; label: string; description: string }> = [
   { value: "speed", label: "追求速度", description: "vector 检索，响应最快" },
   { value: "balanced", label: "均衡", description: "hybrid 融合召回，适合日常查询" },
-  { value: "quality", label: "追求质量", description: "hybrid + rerank + query 改写" },
+  { value: "quality", label: "追求质量", description: "基础20 + 额外图最多10，精排输入最多30，最终最多5" },
   { value: "custom", label: "自定义", description: "手动调整高级检索参数" },
 ];
 
@@ -75,7 +75,7 @@ export function RetrievePage() {
   const [mode, setMode] = useState<RetrievalMode>("hybrid");
   const [vectorTopK, setVectorTopK] = useState("20");
   const [bm25TopK, setBm25TopK] = useState("20");
-  const [rrfK, setRrfK] = useState("60");
+  const [synonymEnabled, setSynonymEnabled] = useState(false);
   const [rerankEnabled, setRerankEnabled] = useState(false);
   const [rerankTopN, setRerankTopN] = useState("10");
   const [queryRewriteEnabled, setQueryRewriteEnabled] = useState(false);
@@ -244,16 +244,14 @@ export function RetrievePage() {
       const topKValue = parsePositiveInteger(topK);
       const vectorTopKValue = mode === "bm25" ? undefined : parsePositiveInteger(vectorTopK);
       const bm25TopKValue = mode === "vector" ? undefined : parsePositiveInteger(bm25TopK);
-      const rrfKValue = mode === "hybrid" ? parsePositiveInteger(rrfK) : undefined;
       const rerankTopNValue = rerankEnabled ? parsePositiveInteger(rerankTopN) : undefined;
       if (
-        !topKValue ||
-        (mode !== "bm25" && !vectorTopKValue) ||
-        (mode !== "vector" && !bm25TopKValue) ||
-        (mode === "hybrid" && !rrfKValue) ||
-        (rerankEnabled && !rerankTopNValue)
+        !topKValue || topKValue > 50 ||
+        (mode !== "bm25" && (!vectorTopKValue || vectorTopKValue > 100)) ||
+        (mode !== "vector" && (!bm25TopKValue || bm25TopKValue > 100)) ||
+        (rerankEnabled && (!rerankTopNValue || rerankTopNValue > 50))
       ) {
-        setError("检索参数必须是大于 0 的整数。");
+        setError("最终上限和精排 top_n 为 1—50，单路召回数量为 1—100 的整数。");
         return;
       }
 
@@ -263,7 +261,6 @@ export function RetrievePage() {
       if (mode === "hybrid") {
         retrievalOptions.vector_top_k = vectorTopKValue;
         retrievalOptions.bm25_top_k = bm25TopKValue;
-        retrievalOptions.rrf_k = rrfKValue;
       }
 
       payload.top_k = topKValue;
@@ -272,8 +269,8 @@ export function RetrievePage() {
         ? { enabled: true, top_n: rerankTopNValue ?? 10 }
         : { enabled: false };
       payload.query_options = queryRewriteEnabled && tenantInfo.features.query_rewrite_allowed
-        ? { enabled: true, strategy: "rewrite" }
-        : { enabled: false };
+        ? { enabled: true, strategy: "rewrite", synonym_enabled: synonymEnabled }
+        : { enabled: false, synonym_enabled: synonymEnabled };
     }
 
     clearDebugResults();
@@ -512,7 +509,7 @@ export function RetrievePage() {
             <p className="border-b border-line pb-3 text-[10px] font-bold uppercase tracking-[0.16em] text-muted">检索参数</p>
             {profile === "custom" ? (
               <div className="mt-4 space-y-4">
-                <FieldRow label="top_k" help="融合后候选数量；启用精排时最终返回数量由 rerank top_n 控制。">
+                <FieldRow label="top_k" help="最终返回上限（1—50）；精排 top_n 不能突破此上限。">
                   <Input type="number" min={1} value={topK} onChange={(event) => setTopK(event.target.value)} className="max-w-[180px]" />
                 </FieldRow>
                 <FieldRow label="检索模式" help="vector 适合语义相似问题，bm25 适合关键词匹配，hybrid 会融合两路结果。">
@@ -540,12 +537,11 @@ export function RetrievePage() {
                     })}
                   </div>
                 </FieldRow>
-                {mode === "hybrid" && (
-                  <FieldRow label="hybrid 参数" help="hybrid 会分别召回向量和关键词结果，再用 RRF 合并排序。">
+                {(
+                  <FieldRow label="召回参数" help="hybrid 会分别召回向量和关键词结果，再用 RRF 合并排序。">
                     <div className="grid gap-3 sm:grid-cols-3">
-                      <CompactNumberField label="vector_top_k" help="向量召回阶段保留的候选数量。" value={vectorTopK} onChange={setVectorTopK} />
-                      <CompactNumberField label="bm25_top_k" help="BM25 关键词召回阶段保留的候选数量。" value={bm25TopK} onChange={setBm25TopK} />
-                      <CompactNumberField label="rrf_k" help="RRF 融合中的平滑常数，用于降低单一路径高排名的影响。" value={rrfK} onChange={setRrfK} />
+                      {mode !== "bm25" && <CompactNumberField label="vector_top_k" help="全部知识库合计向量召回数量（1—100）。" value={vectorTopK} onChange={setVectorTopK} />}
+                      {mode !== "vector" && <CompactNumberField label="bm25_top_k" help="全部知识库合计关键词召回数量（1—100）。" value={bm25TopK} onChange={setBm25TopK} />}
                     </div>
                   </FieldRow>
                 )}
@@ -575,6 +571,7 @@ export function RetrievePage() {
                     )}
                   </div>
                 </FieldRow>
+                <FieldRow label="同义词扩展"><label><input type="checkbox" checked={synonymEnabled} onChange={(event) => setSynonymEnabled(event.target.checked)} /> 启用同义词扩展（默认关闭）</label></FieldRow>
                 <FieldRow label="query 改写">
                   <div className="flex flex-wrap items-center gap-2.5">
                     <label className={`inline-flex h-11 w-fit items-center gap-2.5 rounded-xl border border-line bg-white px-3.5 text-sm font-semibold text-ink ${tenantInfo?.features.query_rewrite_allowed ? "cursor-pointer" : "cursor-not-allowed opacity-50"}`}>
@@ -806,7 +803,7 @@ function EvidencePackPanel({ result, isRunning, requested }: { result: RagRetrie
               <span>候选 {metadata?.candidate_count ?? "—"} 条</span>
               <span>证据 {metadata?.evidence_count ?? pack.items.length} 条</span>
               <span>正文 {metadata?.output_chars ?? "—"} 字符</span>
-              <span>耗时 {metadata?.latency_ms ?? 0}ms</span>
+              <span>耗时 {metadata?.latency_ms ?? "—"}ms</span>
               {metadata?.context_sources_included && <Badge>含 context source</Badge>}
               {metadata?.budget_exceeded && <Badge className="border-amber-200 bg-amber-50 text-amber-700">字符预算已满</Badge>}
             </div>
@@ -967,6 +964,7 @@ function ResearchResultPanel({ result, isRunning }: { result: ResearchData | nul
         <div className="border-b border-line px-5 py-5 sm:px-6"><h2 className="text-base font-bold">运行摘要</h2></div>
         <div className="space-y-3 px-5 py-5 text-xs text-muted sm:px-6">
           <p>耗时 {metadata.latency_ms}ms · {metadata.round_count} 轮 · {metadata.retrieval_task_count} 个检索任务 · {metadata.llm_call_count} 次 Research LLM 调用 · Token 输入 {metadata.input_tokens} / 输出 {metadata.output_tokens}</p>
+          <p>应用模型调用（含子检索 Embedding / 精排）：{metadata.application_model_calls ?? "—"} 次；角色预算仍只计算上述 Research LLM 调用。RRF k：{metadata.rrf_k ?? "—"}</p>
           <p>索引版本：{Object.entries(metadata.index_versions).map(([kb, version]) => kb + "：" + version).join("、")}</p>
           <p>Research ID：{metadata.research_id} · Trace ID：{metadata.trace_id ?? "未启用"} · Log ID：{metadata.log_id}</p>
           {metadata.stages.map((stage) => <p key={stage.stage}>{stage.stage} · {stage.role} · {stage.model} · {stage.latency_ms}ms · Token {stage.input_tokens}/{stage.output_tokens}{stage.degraded ? " · degraded：" + (stage.error ?? "未知") : ""}</p>)}
@@ -1204,7 +1202,7 @@ function RetrievedChunkRow({ chunk, index }: { chunk: RetrievedChunk; index: num
               上下文补充 {supplementalSources.length ? "+" + supplementalSources.length : "（无补充）"}
             </summary>
             <div className="mt-3 space-y-3">
-              <p>索引版本：{chunk.index_version ?? "v1"}</p>
+              <p>索引版本：{chunk.index_version ?? "—"}</p>
               <p>章节 ID：{chunk.section_id ?? "—"} / 父章节：{chunk.parent_section_id ?? "—"} / 顺序：{chunk.order_index ?? "—"}</p>
               {chunk.retrieval_source === "graph" && <p>注入来源：{String(chunk.metadata?.injection_source ?? "关系")}</p>}
               {supplementalSources.map((source) => (
@@ -1393,7 +1391,7 @@ function isMarkdownTableSeparator(line: string) {
 function RunSummary({ result, isRunning }: { result: RagRetrieveResponse | null; isRunning: boolean }) {
   const queryProcessing = result?.metadata.query_processing;
   const retrieval = result?.metadata.retrieval;
-  const kbCount = retrieval?.multi_kb ? retrieval.kb_count ?? result?.kb_ids?.length ?? 1 : 1;
+  const kbCount = retrieval?.kb_count ?? result?.kb_ids?.length ?? "—";
 
   return (
     <section className="rounded-2xl border border-line bg-white shadow-soft">
@@ -1420,9 +1418,9 @@ function RunSummary({ result, isRunning }: { result: RagRetrieveResponse | null;
         <div className="space-y-4 px-5 py-5 sm:px-6">
           <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
             <SummaryOverview label="检索模式" code="mode" value={result.metadata.retrieval?.mode ?? "—"} />
-            <SummaryOverview label={result.metadata.rerank?.enabled ? "候选上限" : "结果上限"} code="top_k" value={result.metadata.top_k ?? "—"} suffix="个" />
+            <SummaryOverview label="最终返回上限" code="top_k" value={result.metadata.top_k ?? "—"} suffix="个" />
             <SummaryOverview label="联查范围" code="kb_count" value={kbCount} suffix="个库" />
-            <SummaryOverview label="融合方式" code="fusion" value={retrieval?.fusion ?? "none"} />
+            <SummaryOverview label="融合方式" code="fusion" value={retrieval?.fusion ?? "—"} />
             <SummaryOverview
               label="服务端耗时"
               code="latency"
@@ -1451,11 +1449,17 @@ function RunSummary({ result, isRunning }: { result: RagRetrieveResponse | null;
               value={result.metadata.retrieval?.fused_count ?? "—"}
             />
           </div>
+          <div className="text-xs text-muted">
+            生效候选：Vector {retrieval?.vector_top_k ?? "—"} / BM25 {retrieval?.bm25_top_k ?? "—"}；
+            基础 {retrieval?.base_candidate_count ?? "—"} / 精排输入 {retrieval?.rerank_input_count ?? "—"}；
+            Embedding 调用 {retrieval?.embedding_request_count ?? "—"} / 应用模型调用 {result.metadata.application_model_calls ?? "—"}；
+            Hybrid 墙钟 {retrieval?.hybrid_latency_ms ?? "—"}ms
+          </div>
           {queryProcessing && <QueryProcessingSummary processing={queryProcessing} />}
           <div className="flex flex-wrap items-center gap-2 text-xs text-muted">
-            <Badge>索引：{result.metadata.index_version ?? (Object.entries(result.metadata.index_versions ?? {}).map(([kb, version]) => kb.slice(0, 8) + ":" + version).join("、") || "v1")}</Badge>
-            <span>图谱注入 {result.metadata.graph_injection?.graph_injected_count ?? 0} 条，入选 {result.metadata.graph_injection?.graph_selected_count ?? 0} 条 / {result.metadata.graph_injection?.latency_ms ?? 0}ms</span>
-            <span>上下文补充 {result.metadata.context_expansion?.supplemental_chunk_count ?? 0} 条 / {result.metadata.context_expansion?.latency_ms ?? 0}ms</span>
+            <Badge>索引：{result.metadata.index_version ?? (Object.entries(result.metadata.index_versions ?? {}).map(([kb, version]) => kb.slice(0, 8) + ":" + version).join("、") || "—")}</Badge>
+            <span>图谱注入 {result.metadata.graph_injection?.graph_injected_count ?? "—"} 条，入选 {result.metadata.graph_injection?.graph_selected_count ?? "—"} 条 / {result.metadata.graph_injection?.latency_ms ?? "—"}ms</span>
+            <span>上下文补充 {result.metadata.context_expansion?.supplemental_chunk_count ?? "—"} 条 / {result.metadata.context_expansion?.latency_ms ?? "—"}ms</span>
             {(result.metadata.graph_injection?.degraded || result.metadata.context_expansion?.degraded) && <span className="text-amber-700">关系增强已降级：{result.metadata.graph_injection?.error ?? result.metadata.context_expansion?.error}</span>}
             {result.metadata.rerank?.enabled ? (
               <Badge className="border-moss/15 bg-moss/8 text-moss">

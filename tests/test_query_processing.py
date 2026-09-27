@@ -75,6 +75,8 @@ class FakeVectorStore(VectorStore):
     async def delete_by_document_id(self, document_id: str) -> None:
         del document_id
 
+    from tests.scope_fakes import vector_scope as similarity_search_scope
+
 
 class FakeRerankProvider(RerankProvider):
     def __init__(self) -> None:
@@ -183,16 +185,10 @@ async def test_llm_rewrite_degrades_without_breaking_query_processing() -> None:
 
 @pytest.mark.asyncio
 async def test_openai_compatible_llm_provider_supports_plain_text_completion() -> None:
-    provider = OpenAICompatibleLLMProvider(
-        Settings(llm_api_key="test-key", llm_model="test-model")
-    )
+    provider = OpenAICompatibleLLMProvider(Settings(llm_api_key="test-key", llm_model="test-model"))
     create = AsyncMock(
         return_value=SimpleNamespace(
-            choices=[
-                SimpleNamespace(
-                    message=SimpleNamespace(content="背景调查标准问题有哪些")
-                )
-            ]
+            choices=[SimpleNamespace(message=SimpleNamespace(content="背景调查标准问题有哪些"))]
         )
     )
     provider._client = SimpleNamespace(
@@ -256,12 +252,12 @@ async def test_pipeline_request_options_override_global_rewrite_setting() -> Non
     enabled = await pipeline.process(
         "raw",
         knowledge_base=knowledge_base,
-        query_options={"enabled": True, "strategy": "rewrite"},
+        query_options={"enabled": True, "strategy": "rewrite", "synonym_enabled": True},
     )
 
     assert disabled.strategy == "noop"
     assert disabled.degraded is False
-    assert disabled.search_query == "raw expanded"
+    assert disabled.search_query == "raw"
     assert enabled.strategy == "rewrite"
     assert enabled.effective_query == "rewritten"
     assert enabled.search_query == "rewritten"
@@ -285,7 +281,11 @@ async def test_explicit_enabled_wins_over_conflicting_strategy_in_service_and_pi
     ):
         options = {"enabled": enabled, "strategy": strategy}
         request = RagRetrieveRequest(
-            kb_id="kb-test", user_id="user-test", query="raw", query_options=options
+            profile="custom",
+            kb_id="kb-test",
+            user_id="user-test",
+            query="raw",
+            query_options=options,
         )
         result = await pipeline.process(
             "raw", knowledge_base=knowledge_base, query_options=request.query_options
@@ -334,15 +334,19 @@ async def test_synonyms_are_scoped_to_each_knowledge_base() -> None:
         settings={"synonyms": [{"terms": ["status"], "expand": ["lifecycle"]}]},
     )
 
-    first = await pipeline.process("status", knowledge_base=kb_one)
-    second = await pipeline.process("status", knowledge_base=kb_two)
+    first = await pipeline.process(
+        "status", knowledge_base=kb_one, query_options={"synonym_enabled": True}
+    )
+    second = await pipeline.process(
+        "status", knowledge_base=kb_two, query_options={"synonym_enabled": True}
+    )
 
     assert first.search_query == "status state"
     assert second.search_query == "status lifecycle"
 
 
 @pytest.mark.asyncio
-async def test_rag_service_uses_processed_query_for_retrieval_but_raw_query_for_rerank() -> None:
+async def test_rag_service_uses_search_query_for_retrieval_and_rerank() -> None:
     llm = FakeLLMProvider({"query": "背景调查标准问题有哪些"})
     embedding = FakeEmbeddingProvider()
     vector_store = FakeVectorStore()
@@ -360,9 +364,7 @@ async def test_rag_service_uses_processed_query_for_retrieval_but_raw_query_for_
     service = RagService(
         session=SimpleNamespace(commit=AsyncMock()),
         settings=Settings(top_k=1, query_rewrite_enabled=False),
-        knowledge_base_repository=SimpleNamespace(
-            get_by_id=AsyncMock(return_value=knowledge_base)
-        ),
+        knowledge_base_repository=SimpleNamespace(get_by_id=AsyncMock(return_value=knowledge_base)),
         embedding_provider=embedding,
         vector_store=vector_store,
         rerank_provider=rerank,
@@ -371,10 +373,11 @@ async def test_rag_service_uses_processed_query_for_retrieval_but_raw_query_for_
 
     response = await service.retrieve(
         RagRetrieveRequest(
+            profile="custom",
             kb_id="kb-test",
             user_id="user-test",
             query="背调要问啥",
-            query_options={"enabled": True, "strategy": "rewrite"},
+            query_options={"enabled": True, "strategy": "rewrite", "synonym_enabled": True},
             rerank_options={"enabled": True, "top_n": 1},
         ),
         tenant_id="tenant-test",
@@ -382,7 +385,7 @@ async def test_rag_service_uses_processed_query_for_retrieval_but_raw_query_for_
 
     assert embedding.queries == ["背景调查标准问题有哪些 标准问题清单"]
     assert response.query == "背调要问啥"
-    assert rerank.queries == ["背调要问啥"]
+    assert rerank.queries == ["背景调查标准问题有哪些 标准问题清单"]
     assert response.metadata["query_processing"] == {
         "raw_query": "背调要问啥",
         "effective_query": "背景调查标准问题有哪些",
@@ -391,13 +394,14 @@ async def test_rag_service_uses_processed_query_for_retrieval_but_raw_query_for_
         "rewrite_latency_ms": response.metadata["query_processing"]["rewrite_latency_ms"],
         "degraded": False,
         "degraded_reason": None,
-        "synonym_enabled": None,
+        "synonym_enabled": True,
         "synonym_applied": True,
         "synonym_expansions": ["标准问题清单"],
         "application_model_calls": 1,
     }
-    assert response.metadata["application_model_calls"] == 2
+    assert response.metadata["application_model_calls"] == 3
     assert response.metadata["application_model_call_details"] == {
+        "embedding": 1,
         "query_rewrite": 1,
         "rerank": 1,
     }
@@ -416,8 +420,10 @@ async def test_rag_service_keeps_query_processing_null_for_legacy_request() -> N
     )
 
     response = await service.retrieve(
-        RagRetrieveRequest(kb_id="kb-test", user_id="user-test", query="question"),
+        RagRetrieveRequest(
+            profile="custom", kb_id="kb-test", user_id="user-test", query="question"
+        ),
         tenant_id="tenant-test",
     )
 
-    assert response.metadata["query_processing"] is None
+    assert response.metadata["query_processing"]["synonym_enabled"] is False

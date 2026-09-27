@@ -37,6 +37,8 @@ class FakeVectorStore(VectorStore):
     async def delete_by_document_id(self, document_id: str) -> None:
         del document_id
 
+    from tests.scope_fakes import vector_scope as similarity_search_scope
+
 
 class FakeTrace:
     id = "trace-test"
@@ -92,7 +94,9 @@ async def test_retrieve_records_trace_spans_and_links_log_id(monkeypatch) -> Non
     )
 
     response = await service.retrieve(
-        RagRetrieveRequest(kb_id="kb-test", user_id="user-test", query="question"),
+        RagRetrieveRequest(
+            profile="custom", kb_id="kb-test", user_id="user-test", query="question"
+        ),
         tenant_id="tenant-test",
     )
 
@@ -111,5 +115,6 @@ async def test_retrieve_records_trace_spans_and_links_log_id(monkeypatch) -> Non
     assert client.flush_count == 1
 
     final_update = client.trace_instance.updates[-1]
-    assert final_update["metadata"] == {"log_id": response.metadata["log_id"]}
+    assert final_update["metadata"]["log_id"] == response.metadata["log_id"]
+    assert final_update["metadata"]["application_model_calls"] == 1
     assert final_update["output"] == {"chunks": [{"chunk_id": "chunk-1", "score": 0.9}]}

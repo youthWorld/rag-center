@@ -57,6 +57,8 @@ class FakeVectorStore(VectorStore):
             }
         ][:top_k]
 
+    from tests.scope_fakes import vector_scope as similarity_search_scope
+
 
 class FakeKeywordSearchProvider(KeywordSearchProvider):
     async def add_chunks(self, chunks: list[dict]) -> None:
@@ -76,6 +78,8 @@ class FakeKeywordSearchProvider(KeywordSearchProvider):
                 "score": 0.8,
             }
         ][:top_k]
+
+    from tests.scope_fakes import keyword_scope as keyword_search_scope
 
 
 class FakeRerankProvider(RerankProvider):
@@ -197,74 +201,29 @@ async def test_pro_quality_profile_enables_hybrid_rerank_and_rewrite() -> None:
     assert response.metadata["tenant_policy"]["effective_query_rewrite"] is True
 
 
-@pytest.mark.asyncio
-async def test_named_profile_overrides_explicit_request_before_feature_checks() -> None:
-    service = _rag_service("standard", keyword=True)
+@pytest.mark.parametrize("profile", ["speed", "balanced", "quality", None])
+@pytest.mark.parametrize("field", ["top_k", "retrieval_options", "rerank_options", "query_options"])
+@pytest.mark.parametrize("value", [None, {}])
+def test_named_profile_rejects_explicit_overrides(profile, field, value):
+    from pydantic import ValidationError
 
-    response = await service.retrieve(
-        RagRetrieveRequest(
-            kb_id="kb-test",
-            user_id="user-test",
-            query="question",
-            profile="balanced",
-            top_k=100,
-            retrieval_options={"mode": "vector", "vector_top_k": 100},
-            rerank_options={"enabled": True, "top_n": 100},
-            query_options={"enabled": True, "strategy": "rewrite"},
-        ),
-        tenant_id="tenant-test",
-    )
-
-    assert response.metadata["top_k"] == 10
-    assert response.metadata["retrieval"]["mode"] == "hybrid"
-    assert response.metadata["retrieval"]["vector_top_k"] == 10
-    assert response.metadata["tenant_policy"]["effective_rerank"] is False
-    assert response.metadata["tenant_policy"]["effective_query_rewrite"] is False
-
-
-@pytest.mark.asyncio
-async def test_quality_profile_overrides_explicit_disable_and_env_defaults() -> None:
-    service = _rag_service("pro", keyword=True)
-    service.settings = Settings(rerank_enabled=False, query_rewrite_enabled=False)
-
-    response = await service.retrieve(
-        RagRetrieveRequest(
-            kb_id="kb-test",
-            user_id="user-test",
-            query="question",
-            profile="quality",
-            rerank_options={"enabled": False},
-            query_options={"enabled": False, "strategy": "noop"},
-        ),
-        tenant_id="tenant-test",
-    )
-
-    assert response.metadata["tenant_policy"]["effective_rerank"] is True
-    assert response.metadata["tenant_policy"]["effective_query_rewrite"] is True
-
-
-def test_named_profile_preserves_fields_not_defined_in_preset() -> None:
-    request = RagRetrieveRequest(
-        kb_id="kb-test",
-        user_id="user-test",
-        query="question",
-        profile="speed",
-        retrieval_options={"mode": "hybrid", "vector_top_k": 99, "rrf_k": 42},
-    )
-
-    effective = RagService._expand_profile(request, "speed")
-
-    assert effective.retrieval_options.mode == "vector"
-    assert effective.retrieval_options.vector_top_k == 5
-    assert effective.retrieval_options.rrf_k == 42
-    assert request.retrieval_options.mode == "hybrid"
+    with pytest.raises(ValidationError, match="custom"):
+        RagRetrieveRequest.model_validate(
+            {
+                "kb_id": "kb-test",
+                "user_id": "user-test",
+                "query": "question",
+                "profile": profile,
+                field: value,
+            }
+        )
 
 
 def test_custom_uses_environment_then_code_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("RERANK_ENABLED", "true")
     monkeypatch.setenv("QUERY_REWRITE_ENABLED", "true")
     service = object.__new__(RagService)
-    service.settings = Settings(_env_file=None)
+    service.settings = Settings(hybrid_rrf_k=60, _env_file=None)
     request = RagRetrieveRequest(
         kb_id="kb-test", user_id="user-test", query="question", profile="custom"
     )
@@ -273,7 +232,7 @@ def test_custom_uses_environment_then_code_defaults(monkeypatch: pytest.MonkeyPa
 
     monkeypatch.delenv("RERANK_ENABLED")
     monkeypatch.delenv("QUERY_REWRITE_ENABLED")
-    service.settings = Settings(_env_file=None)
+    service.settings = Settings(hybrid_rrf_k=60, _env_file=None)
     assert service._resolve_rerank_enabled(request) is False
     assert service._resolve_query_rewrite_enabled(request) is False
 

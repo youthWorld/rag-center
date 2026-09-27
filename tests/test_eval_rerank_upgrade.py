@@ -46,7 +46,8 @@ class FakeClient:
             "metadata": {
                 "top_k": 20,
                 "latency_ms": 7,
-                "application_model_calls": 0,
+                "application_model_calls": 1,
+                "application_model_call_details": {"embedding": 1, "rerank": 0},
                 "tenant_policy": {
                     "retrieve_profile": "custom",
                     "effective_mode": "hybrid",
@@ -62,6 +63,9 @@ class FakeClient:
 
 
 class FakeProvider:
+    async def close(self):
+        self.closed = True
+
     def __init__(self, *, fail=False):
         self.fail = fail
         self.seen = []
@@ -92,6 +96,7 @@ def _runner(tmp_path, kind):
         output_root=tmp_path,
         limit=2,
         settings=Settings(
+            hybrid_rrf_k=60,
             _env_file=None,
             rerank_base_url="https://workspace.cn-beijing.maas.aliyuncs.com/api/v1",
             model_api_key="fake-model-key",
@@ -125,8 +130,13 @@ async def test_paired_run_freezes_one_rrf_top20_and_scores(tmp_path, kind):
         assert a[index]["shared_candidate_hash"] == b[index]["shared_candidate_hash"]
         assert a[index]["shared_candidate_hash"] == shared[index]["candidate_hash"]
         assert len(a[index]["contexts"]) == len(b[index]["contexts"]) == 10
-        assert a[index]["application_model_calls"] == int(kind == "upgrade")
-        assert b[index]["application_model_calls"] == 1
+        assert a[index]["application_model_calls"] == 1 + int(kind == "upgrade")
+        assert b[index]["application_model_calls"] == 2
+        for row in (a[index], b[index]):
+            assert row["application_model_call_details"]["embedding"] == 1
+            assert row["application_model_calls"] == sum(
+                row["application_model_call_details"].values()
+            )
         assert a[index]["effective_config_mismatches"] == []
         assert b[index]["effective_config_mismatches"] == []
         if kind == "effect":
@@ -173,7 +183,9 @@ def test_experiment_rejects_quality_profile_and_uncontrolled_changes():
 @pytest.mark.asyncio
 async def test_missing_workspace_url_stops_before_any_calls_or_files(tmp_path):
     runner, client = _runner(tmp_path, "effect")
-    runner.settings = Settings(_env_file=None, rerank_base_url="", model_api_key="fake")
+    runner.settings = Settings(
+        hybrid_rrf_k=60, _env_file=None, rerank_base_url="", model_api_key="fake"
+    )
     with pytest.raises(EvaluationRunError, match="RERANK_BASE_URL"):
         await runner.run()
     assert client.payloads == []

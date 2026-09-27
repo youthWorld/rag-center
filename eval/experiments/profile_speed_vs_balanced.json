@@ -4,11 +4,8 @@
   "title": "speed 与 balanced Profile 对比实验",
   "target": "retrieve_profile",
   "changed_fields": [
-    "top_k",
     "retrieval_options.mode",
-    "retrieval_options.vector_top_k",
-    "retrieval_options.bm25_top_k",
-    "retrieval_options.rrf_k"
+    "retrieval_options.bm25_top_k"
   ],
   "dataset": "eval/datasets/golden_basic_20.json",
   "suite": "basic",

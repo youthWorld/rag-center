@@ -117,6 +117,40 @@ describe("RetrievePage research mode", () => {
     mocks.feedback.mockResolvedValue({ feedback_id: "score-1" });
   });
 
+  it("keeps Evidence independent and excludes every named-profile override", async () => {
+    const user = userEvent.setup();
+    mount();
+    await screen.findByLabelText("选择 测试库");
+    await user.click(screen.getByLabelText("启用证据编排"));
+    await user.click(screen.getByRole("radio", { name: /追求质量/ }));
+    await ask(user);
+    const payload = mocks.retrieve.mock.calls[0][0];
+    expect(payload.profile).toBe("quality");
+    expect(payload.evidence_options.enabled).toBe(true);
+    for (const key of ["top_k", "retrieval_options", "rerank_options", "query_options", "rrf_k"])
+      expect(payload).not.toHaveProperty(key);
+  });
+
+  it("restores custom draft and submits only parameters for the current mode", async () => {
+    const user = userEvent.setup();
+    mount();
+    await screen.findByLabelText("选择 测试库");
+    await user.click(screen.getByRole("radio", { name: /自定义/ }));
+    const synonym = screen.getByLabelText(/启用同义词扩展/);
+    expect(synonym).not.toBeChecked();
+    await user.click(synonym);
+    await user.click(screen.getByRole("radio", { name: /bm25.*关键词/ }));
+    await user.click(screen.getByRole("radio", { name: /均衡/ }));
+    await user.click(screen.getByRole("radio", { name: /自定义/ }));
+    expect(screen.getByLabelText(/启用同义词扩展/)).toBeChecked();
+    await ask(user);
+    const payload = mocks.retrieve.mock.calls[0][0];
+    expect(payload.retrieval_options.mode).toBe("bm25");
+    expect(payload.retrieval_options).not.toHaveProperty("vector_top_k");
+    expect(payload.retrieval_options).not.toHaveProperty("rrf_k");
+    expect(payload.query_options.synonym_enabled).toBe(true);
+  });
+
   it("uses the ordinary endpoint by default and the restricted research payload in Research mode", async () => {
     const user = userEvent.setup();
     mount();

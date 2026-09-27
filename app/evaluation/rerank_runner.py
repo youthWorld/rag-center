@@ -28,14 +28,24 @@ class RerankEvaluationRunner(EvaluationRunner):
         super().__init__(**kwargs)
         self.settings = settings
         self.tenant_id = tenant_id
+        self._owned_llm = None
         self.providers = {"qwen37": Qwen37RerankProvider.from_settings(settings)}
         if self.experiment.get("rerank_experiment") == "upgrade":
+            self._owned_llm = OpenAICompatibleLLMProvider(settings)
             self.providers["llm"] = LLMRerankProvider.from_settings(
-                OpenAICompatibleLLMProvider(settings),
+                self._owned_llm,
                 settings,
             )
 
     async def run(self):
+        try:
+            return await self._run_owned()
+        finally:
+            await self.providers["qwen37"].close()
+            if self._owned_llm is not None:
+                await self._owned_llm.close()
+
+    async def _run_owned(self):
         from app.evaluation.dataset import select_dataset_cases
 
         self._validate_service_configuration()
@@ -212,7 +222,12 @@ class RerankEvaluationRunner(EvaluationRunner):
                 "retrieved_chunks": ranked[:10],
                 "metadata": {
                     **data["metadata"],
-                    "application_model_calls": int(reranker != "none"),
+                    "application_model_calls": data["metadata"]["application_model_calls"]
+                    + int(reranker != "none"),
+                    "application_model_call_details": {
+                        **data["metadata"].get("application_model_call_details", {}),
+                        "rerank": int(reranker != "none"),
+                    },
                 },
             }
             row = self._success_row(
@@ -225,10 +240,9 @@ class RerankEvaluationRunner(EvaluationRunner):
                 latency_ms=retrieval_ms + rerank_ms,
                 warmup=False,
             )
-            row["application_model_call_details"] = {
-                "query_rewrite": 0,
-                "rerank": int(reranker != "none"),
-            }
+            row["application_model_call_details"] = dict(
+                result_data["metadata"]["application_model_call_details"]
+            )
             row["shared_candidate_hash"] = fingerprint
             row["shared_candidate_count"] = len(frozen)
             row["stage_metadata"]["offline_rerank"] = {

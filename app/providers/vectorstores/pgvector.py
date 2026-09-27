@@ -1,5 +1,6 @@
 from typing import Any
 
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.providers.vectorstores.base import VectorStore
@@ -7,8 +8,11 @@ from app.repositories.chunk_repository import ChunkRepository
 
 
 class PgVectorStore(VectorStore):
-    def __init__(self, session: AsyncSession) -> None:
+    records_request_attempts = True
+
+    def __init__(self, session: AsyncSession, *, read_session_factory=None) -> None:
         self.repository = ChunkRepository(session)
+        self.read_session_factory = read_session_factory
 
     async def add_chunks(self, chunks: list[dict[str, Any]]) -> None:
         await self.repository.add_chunks(chunks)
@@ -22,15 +26,42 @@ class PgVectorStore(VectorStore):
         top_k: int = 5,
         index_version: str | None = None,
     ) -> list[dict[str, Any]]:
-        rows = await self.repository.similarity_search(
+        return await self.similarity_search_scope(
             query_vector,
             tenant_id=tenant_id,
-            kb_id=kb_id,
+            index_versions={kb_id: index_version or "v1"},
             top_k=top_k,
-            index_version=index_version,
         )
+
+    async def similarity_search_scope(
+        self,
+        query_vector: list[float],
+        *,
+        tenant_id: str,
+        index_versions: dict[str, str],
+        top_k: int,
+    ) -> list[dict[str, Any]]:
+        if self.read_session_factory is None:
+            raise RuntimeError("vector read session factory is required")
+        async with self.read_session_factory() as session:
+            try:
+                await session.execute(text("SET TRANSACTION READ ONLY"))
+                rows = await ChunkRepository(session).similarity_search_scope(
+                    query_vector,
+                    tenant_id=tenant_id,
+                    index_versions=index_versions,
+                    top_k=top_k,
+                )
+                return self._serialize(rows)
+            finally:
+                await session.rollback()
+
+    @staticmethod
+    def _serialize(rows) -> list[dict[str, Any]]:
         return [
             {
+                "tenant_id": chunk.tenant_id,
+                "kb_id": chunk.kb_id,
                 "document_id": chunk.document_id,
                 "chunk_id": chunk.id,
                 "title": chunk.title,
